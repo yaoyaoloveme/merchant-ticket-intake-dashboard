@@ -13,11 +13,17 @@ let selectedKaCategory = '全部';
 let lastAutoSyncFinishedAt = null;
 let followsLatestDate = true;
 const $ = (id) => document.getElementById(id);
+const isPublicDashboard = window.TICKET_PUBLIC === true;
+let publicManifest = null;
+let publicSnapshot = null;
+let publicLoadedRevision = null;
+let publicRequest = 0;
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
 async function loadDashboard() {
+  if (isPublicDashboard) return loadPublicDashboard();
   const date = $('datePicker').value;
   const windowSize = $('windowPicker').value;
   $('statusLine').className = 'status-line';
@@ -49,6 +55,7 @@ function rootQuery() {
 }
 
 async function loadRootCauses() {
+  if (isPublicDashboard) return loadPublicRootCauses();
   $('rootStatusLine').className = 'root-status-line';
   $('rootStatusLine').textContent = '正在读取逐单根因和稽查证据…';
   try {
@@ -177,6 +184,18 @@ function renderAlerts(growth, riskSummary, riskRecords, operationalSummary) {
 }
 
 async function pollRealtimeStatus() {
+  if (isPublicDashboard) {
+    try {
+      const manifest = await fetchPublicJson('data/index.json');
+      publicManifest = manifest;
+      if (manifest.revision !== publicLoadedRevision) await loadPublicDashboard(manifest);
+      else updatePublicStatus();
+    } catch (error) {
+      $('statusLine').className = 'status-line error';
+      $('statusLine').textContent = `自动刷新失败，保留上次数据：${error.message}`;
+    }
+    return;
+  }
   try {
     const response = await fetch('/api/sync/status');
     const status = await response.json();
@@ -258,6 +277,7 @@ function renderAnomalyTable(rows) {
 }
 
 async function syncData() {
+  if (isPublicDashboard) return loadPublicDashboard();
   const button = $('syncBtn');
   button.disabled = true; button.textContent = '正在同步…';
   const days = Number($('windowPicker').value);
@@ -279,6 +299,7 @@ async function syncData() {
 }
 
 async function syncEvidence() {
+  if (isPublicDashboard) return loadRootCauses();
   const button = $('evidenceBtn');
   button.disabled = true; button.textContent = '正在更新证据…';
   try {
@@ -306,5 +327,78 @@ $('evidenceBtn').addEventListener('click', syncEvidence);
 $('rootSearch').addEventListener('input', () => { clearTimeout(rootSearchTimer); rootSearchTimer=setTimeout(() => { rootPage=1; loadRootCauses(); },300); });
 $('rootPrev').addEventListener('click', () => { if (rootPage>1) { rootPage--; loadRootCauses(); $('rootStatusLine').scrollIntoView({behavior:'smooth',block:'center'}); } });
 $('rootNext').addEventListener('click', () => { if (rootPage<rootPages) { rootPage++; loadRootCauses(); $('rootStatusLine').scrollIntoView({behavior:'smooth',block:'center'}); } });
+async function fetchPublicJson(path) {
+  const response = await fetch(`${path}?v=${Date.now()}`, {cache: 'no-store'});
+  if (!response.ok) throw new Error(`数据读取失败（${response.status}）`);
+  return response.json();
+}
+
+function updatePublicStatus() {
+  if (!publicSnapshot || !publicManifest) return;
+  const sourceAt = publicManifest.source_synced_at;
+  const ageMinutes = (Date.now() - Date.parse(sourceAt)) / 60000;
+  const stale = !Number.isFinite(ageMinutes) || ageMinutes > 10;
+  $('statusLine').className = stale ? 'status-line error' : 'status-line';
+  const cutoff = dashboardData?.cutoff_time ? ` · 同时段对比截至 ${dashboardData.cutoff_time}` : '';
+  $('statusLine').textContent = `${dashboardData.selected_date}${cutoff} · 工单更新：${sourceAt.replace('T', ' ').slice(0,19)}（北京时间） · 快照发布：${publicManifest.published_at.replace('T', ' ').slice(11,19)} · 每5分钟采集发布，页面自动检查更新${stale ? ' · 数据已超过10分钟未更新，请等待采集端恢复' : ''}`;
+}
+
+async function loadPublicDashboard(manifest) {
+  const requestId = ++publicRequest;
+  const button = $('syncBtn');
+  button.disabled = true;
+  $('statusLine').textContent = '正在读取最新公开数据…';
+  try {
+    manifest = manifest || await fetchPublicJson('data/index.json');
+    const selected = followsLatestDate ? manifest.latest_date : $('datePicker').value;
+    if (!manifest.dates.includes(selected)) throw new Error('该日期没有已发布的数据，请选择日期范围内的数据');
+    const snapshot = await fetchPublicJson(`data/${selected}.json`);
+    if (requestId !== publicRequest) return;
+    publicManifest = manifest;
+    publicSnapshot = snapshot;
+    publicLoadedRevision = manifest.revision;
+    $('datePicker').min = manifest.dates[manifest.dates.length - 1];
+    $('datePicker').max = manifest.latest_date;
+    $('datePicker').value = selected;
+    const windowSize = Number($('windowPicker').value);
+    dashboardData = {...snapshot.dashboard, daily_trend: snapshot.dashboard.daily_trend.slice(-windowSize)};
+    render(dashboardData, null, null);
+    updatePublicStatus();
+    rootPage = 1;
+    loadPublicRootCauses();
+  } catch (error) {
+    if (requestId !== publicRequest) return;
+    $('statusLine').className = 'status-line error';
+    $('statusLine').textContent = `${error.message}${publicSnapshot ? '；保留上次成功读取的数据' : ''}`;
+  } finally {
+    if (requestId === publicRequest) button.disabled = false;
+  }
+}
+
+function loadPublicRootCauses() {
+  if (!publicSnapshot) return;
+  const ledger = publicSnapshot.ledger;
+  const params = rootQuery();
+  const keyword = (params.get('q') || '').toLowerCase();
+  const filtered = ledger.records.filter(record => {
+    const text = ['ticket_id','shop_id','brand','merchant_claim','customer_behavior','root_cause'].map(key => record[key] || '').join(' ').toLowerCase();
+    return (!keyword || text.includes(keyword)) &&
+      (!params.get('layer') || record.root_layer === params.get('layer')) &&
+      (!params.get('status') || record.verification_status === params.get('status')) &&
+      (params.get('ka') !== 'ka' || record.is_ka) &&
+      (params.get('ka') !== 'non-ka' || !record.is_ka) &&
+      (!params.get('unresolved') || record.verification_status === '待核实');
+  });
+  const pageSize = Number(params.get('page_size'));
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  rootPage = Math.min(rootPage, pages);
+  renderRootCauses({...ledger, filtered_total: filtered.length, page: rootPage, pages,
+    records: filtered.slice((rootPage - 1) * pageSize, rootPage * pageSize)}, null);
+}
+
+if (isPublicDashboard) {
+  $('syncBtn').textContent = '刷新公开数据';
+  $('evidenceBtn').hidden = true;
+}
 loadDashboard();
 window.setInterval(pollRealtimeStatus, 30000);

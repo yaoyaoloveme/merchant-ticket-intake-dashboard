@@ -43,6 +43,23 @@
 
 本项目只读取现有看板，不调用其刷新接口，也不修改源系统数据。“实时”受上游源看板数据刷新频率限制。
 
-## GitHub 使用边界
+## 公开版部署
 
-仓库仅保存应用源码和运行说明；本地 SQLite 工单库 `data/tickets.db` 不会提交。该看板依赖 Flask API、SQLite 和定时同步，不能直接以 GitHub Pages 方式提供实时看板。请在有网络访问源看板能力的受控服务器上按上述方式运行，并通过 `TICKET_DASHBOARD_URL` 配置源地址。
+- 独立仓库：https://github.com/yaoyaoloveme/merchant-ticket-intake-dashboard
+- 公开地址：https://yaoyaoloveme.github.io/merchant-ticket-intake-dashboard/
+- `docs/` 是只读公开版，保留四类工单分析、KA逐单明细、高风险雷达、根因搜索与分页。
+- `publish_snapshot.py --sync --push` 从内网同步今天和昨天、更新逐单证据，再生成公开快照、提交并推送。GitHub Actions 将 `docs/` 部署到 Pages。
+- Mac 登录后由 `com.codex.merchant-ticket-pages-publisher` 定时任务每300秒运行；支持重启后恢复，同一时刻只运行一个发布任务。
+- 浏览器每30秒检查快照版本，有新版本即刷新。GitHub部署与缓存可能带来额外延迟，不保证严格的300秒端到端延迟。
+- 必须保持采集电脑开机、联网且能访问内网。电脑休眠、内网不可达或推送失败时，公网仍显示最后成功快照；源数据超过10分钟未更新会显示过期提示。
+- GitHub无法直接抓取私网地址。要脱离本机持续采集，须将发布任务迁移到具备内网访问能力的常驻服务器。
+- 发布JSON保留业务问题、工单/店铺编号和品牌；基础脱敏手机号、证件号、邮箱及显式联系方式，处理人仅显示是否分配。自由文本脱敏并非完整的人工隐私审核。
+- SQLite、凭据与本机运行日志不提交。源系统链接仅供有内网权限的人使用，不影响页面内查看具体工单。
+
+手动生成快照（不推送）：
+
+```bash
+/opt/homebrew/bin/python3.14 publish_snapshot.py
+```
+
+发布日志：`~/Library/Logs/merchant-ticket-pages-publisher.log`。
