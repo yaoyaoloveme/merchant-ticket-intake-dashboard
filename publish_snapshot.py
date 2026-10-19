@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -113,6 +114,23 @@ def export_snapshot() -> None:
     logging.info('Exported %d dates; source updated %s', len(dates), source_at)
 
 
+def sync_with_retry(attempts: int = 3) -> None:
+    """Retry the collection cycle after short private-network interruptions."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            dashboard.sync_days(days=2)
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            delay = attempt * 5
+            logging.warning('Collection attempt %d/%d failed: %s; retrying in %ds', attempt, attempts, exc, delay)
+            time.sleep(delay)
+    raise RuntimeError(f'Collection failed after {attempts} attempts: {last_error}') from last_error
+
+
 def publish() -> None:
     if git('remote', 'get-url', 'origin') != EXPECTED_REMOTE or git('branch', '--show-current') != 'main':
         raise RuntimeError('Publishing requires the independent intake dashboard origin/main')
@@ -123,7 +141,16 @@ def publish() -> None:
     if git('diff', '--cached', '--name-only'):
         git('commit', '-m', 'data: refresh public ticket dashboard snapshot')
     # Retry a previously committed push on the next invocation after network failure.
-    git('push', 'origin', 'HEAD:main')
+    try:
+        git('push', 'origin', 'HEAD:main')
+    except subprocess.CalledProcessError:
+        # A launchd interval and a manual recovery can briefly overlap. The
+        # repository lock prevents duplicate export work, but GitHub can still
+        # report a ref race after another invocation has pushed this exact
+        # commit. Treat identical local/remote commits as success.
+        git('fetch', 'origin', 'main')
+        if git('rev-parse', 'HEAD') != git('rev-parse', 'origin/main'):
+            raise
     logging.info('Public snapshot pushed to the independent GitHub repository')
 
 
@@ -134,7 +161,6 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     os.environ['TZ'] = 'Asia/Shanghai'
-    import time
     time.tzset()
     dashboard.DATA_DIR.mkdir(exist_ok=True)
     with (dashboard.DATA_DIR / 'pages-publish.lock').open('w') as lock:
@@ -144,7 +170,7 @@ def main() -> None:
             logging.info('A publication is already running; skipping duplicate invocation')
             return
         if args.sync:
-            dashboard.sync_days(days=2)
+            sync_with_retry()
             # Refresh current evidence, including changed outcomes on existing tickets.
             for day in (date.today() - timedelta(days=1), date.today()):
                 dashboard.sync_evidence_for_day(day, force=True)

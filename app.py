@@ -26,6 +26,8 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template, request
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 ROOT = Path(__file__).resolve().parent
@@ -280,13 +282,27 @@ def source_session() -> requests.Session:
     session = requests.Session()
     session.trust_env = False
     session.headers.update({"User-Agent": "DailyTicketDashboard/1.0 (read-only analytics)"})
+    # The private-network tunnel can briefly flap while reconnecting. Retry
+    # idempotent reads so one transient routing failure does not lose a whole
+    # five-minute collection cycle.
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=2,
+        status=2,
+        backoff_factor=0.8,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    session.mount("http://", HTTPAdapter(max_retries=retry, pool_connections=8, pool_maxsize=12))
     return session
 
 
 def fetch_ticket_day(day: date) -> list[dict[str, Any]]:
     session = source_session()
     url = urljoin(SOURCE_BASE, "list")
-    first = session.get(url, params={"date": day.isoformat(), "page": 1}, timeout=30)
+    first = session.get(url, params={"date": day.isoformat(), "page": 1}, timeout=(8, 30))
     first.raise_for_status()
     soup = BeautifulSoup(first.text, "html.parser")
     pager = clean(soup.select_one(".pager").get_text(" ", strip=True) if soup.select_one(".pager") else "")
@@ -294,7 +310,7 @@ def fetch_ticket_day(day: date) -> list[dict[str, Any]]:
     pages = int(match.group(1)) if match else 1
     rows = parse_ticket_rows(soup)
     for page in range(2, pages + 1):
-        response = session.get(url, params={"date": day.isoformat(), "page": page}, timeout=30)
+        response = session.get(url, params={"date": day.isoformat(), "page": page}, timeout=(8, 30))
         response.raise_for_status()
         rows.extend(parse_ticket_rows(BeautifulSoup(response.text, "html.parser")))
     return rows
@@ -387,7 +403,7 @@ def fetch_ticket_evidence(ticket_id: str) -> dict[str, Any]:
     session = source_session()
     url = urljoin(SOURCE_BASE, "events/detail")
     try:
-        response = session.get(url, params={"event_id": ticket_id}, timeout=25)
+        response = session.get(url, params={"event_id": ticket_id}, timeout=(8, 25))
         response.raise_for_status()
         return parse_ticket_evidence(ticket_id, response.text)
     except Exception as exc:
