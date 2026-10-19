@@ -1,5 +1,5 @@
 # Local ticket data and SQLite sidecar files may contain operational records.
-data/
+/data/
 *.db
 *.db-shm
 *.db-wal
