@@ -1,0 +1,16 @@
+# Local ticket data and SQLite sidecar files may contain operational records.
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Python runtime artifacts.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local editor and operating-system files.
+.DS_Store
+.env
+*.log
