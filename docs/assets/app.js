@@ -101,13 +101,14 @@ function renderRootCauses(data, evidenceSync) {
 
 function render(data, sync, realtime) {
   const s = data.summary;
+  $('sourceBreakdown').innerHTML = `<span>天润工单：<b>${Number(s.tianrun_count || 0).toLocaleString()}</b></span><span>商家APP发起：<b>${Number(s.merchant_app_count || 0).toLocaleString()}</b></span>`;
   $('totalMetric').textContent = s.total.toLocaleString();
   $('totalCompare').className = signClass(s.delta);
   $('totalCompare').textContent = `较前一日 ${signed(s.delta)}（${signed(s.pct)}%），近7日均值 ${s.avg7}`;
   const driver = s.top_driver;
   $('driverMetric').textContent = driver ? driver.category : '—';
   $('driverCompare').className = driver ? signClass(driver.delta) : '';
-  $('driverCompare').textContent = driver ? (s.delta > 0 ? `较前一日 ${signed(driver.delta)} 单，贡献总增量 ${driver.contribution}%` : `较前一日 ${signed(driver.delta)} 单；全量净变化 ${signed(s.delta)} 单`) : '暂无数据';
+  $('driverCompare').textContent = driver ? `较前一日 ${signed(driver.delta)} 单；天润净变化 ${signed(s.tianrun_delta || 0)} 单` : '暂无数据';
   $('anomalyMetric').textContent = s.record_anomaly_count;
   $('anomalyCompare').textContent = `${s.risk_ticket_count} 张敏感风险工单 · ${s.growth_anomaly_count} 个类型增长异常`;
   $('kaMetric').textContent = `${data.ka.ratio}%`;
@@ -119,8 +120,9 @@ function render(data, sync, realtime) {
   const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
   $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
   renderTrend(data.daily_trend);
+  renderMerchantApp(data.merchant_app);
   renderCategoryInsights(data.category_insights);
-  renderAlerts(data.growth_anomalies, data.risk_summary, data.risk_records, data.operational_anomaly_summary);
+  renderAlerts(data.growth_anomalies, data.risk_summary, data.risk_records, data.operational_anomaly_summary, data.merchant_app?.risk_records || []);
   renderTopics(data.topics);
   renderKA(data.ka);
   renderAnomalyTable(data.anomaly_records);
@@ -128,7 +130,7 @@ function render(data, sync, realtime) {
 
 function renderTrend(days) {
   const categories = Object.keys(colors);
-  $('trendLegend').innerHTML = categories.map(c => `<span><i style="background:${colors[c]}"></i>${c}</span>`).join('');
+  $('trendLegend').innerHTML = `${categories.map(c => `<span><i style="background:${colors[c]}"></i>${c}</span>`).join('')}<span><i class="app-legend-swatch"></i>商家APP发起</span>`;
   const max = Math.max(1, ...days.map(d => d.total));
   $('trendChart').style.setProperty('--bars', days.length);
   $('trendChart').style.minWidth = `${Math.max(640, days.length * 58)}px`;
@@ -136,9 +138,49 @@ function renderTrend(days) {
     const segments = categories.map(cat => {
       const height = day.total ? day.categories[cat] / day.total * 100 : 0;
       return `<span class="bar-seg" style="--seg-height:${height}%;background:${colors[cat]}" title="${cat} ${day.categories[cat]}单"></span>`;
-    }).join('');
-    return `<div class="day-bar"><span class="bar-value">${day.total}</span><div class="bar-stack" style="--height:${day.total / max * 215}px" title="${day.date}：${day.total}单">${segments}</div><span class="day-label">${day.label}</span></div>`;
+    }).join('') + `<span class="bar-seg app-bar-seg" style="--seg-height:${day.total ? day.merchant_app_count / day.total * 100 : 0}%" title="商家APP发起 ${day.merchant_app_count}单"></span>`;
+    const sourceTitle = `天润 ${day.tianrun_count} 单 · 商家APP ${day.merchant_app_count} 单`;
+    return `<div class="day-bar"><span class="bar-value">${day.total}</span><div class="bar-stack" style="--height:${day.total / max * 215}px" title="${day.date}：${day.total}单（${sourceTitle}）">${segments}</div><span class="day-label">${day.label}</span></div>`;
   }).join('');
+}
+
+function renderMerchantApp(app) {
+  app = app || {};
+  const syncedAt = app.day_synced_at ? app.day_synced_at.replace('T', ' ') : '未同步';
+  const queueAt = app.open_synced_at ? app.open_synced_at.replace('T', ' ') : '';
+  const queueTimestamp = app.open_synced_at ? Date.parse(/[Zz]|[+-]\d\d:\d\d$/.test(app.open_synced_at) ? app.open_synced_at : `${app.open_synced_at}+08:00`) : NaN;
+  const queueStale = !Number.isFinite(queueTimestamp) || Date.now() - queueTimestamp > 15 * 60 * 1000;
+  const queueStatus = !app.open_synced_at ? '未成功读取当前未完成队列' : queueStale ? `队列数据可能过旧，最近同步 ${queueAt}` : `当前队列已核对 · ${queueAt}`;
+  $('merchantAppSummary').innerHTML = `<div class="merchant-app-kpis">
+    <div><span>所选日期新增</span><strong>${Number(app.count || 0).toLocaleString()}</strong><small>前日 ${Number(app.previous || 0).toLocaleString()} · <b class="${signClass(app.delta || 0)}">${signed(app.delta || 0)}</b></small></div>
+    <div><span>当前未完成</span><strong>${Number(app.current_pending_count || 0).toLocaleString()}</strong><small>不受所选分析日期限制</small></div>
+    <div class="${app.overdue_24h_count ? 'is-overdue' : ''}"><span>超24小时仍未稽查</span><strong>${Number(app.overdue_24h_count || 0).toLocaleString()}</strong><small>只统计当前未完成且状态未稽查</small></div>
+    <div><span>所选日期数据同步</span><strong class="sync-time">${escapeHtml(syncedAt)}</strong><small>${app.loaded ? 'APP新增明细已读取' : '该日期尚未确认完成同步'}</small></div>
+  </div>
+  <div class="merchant-sync-note ${queueStale ? 'stale' : 'fresh'}"><b>${queueStale ? '需核实队列时效' : '未完成队列同步正常'}</b><span>${escapeHtml(queueStatus)}</span><small>新增量按入口计数，同一事项若同时进入天润与APP会分别计数；超时从APP创建时间起算。</small></div>`;
+
+  const overdue = app.overdue_24h_records || [];
+  $('merchantOverdueCount').textContent = app.open_synced_at && !queueStale ? `${overdue.length} 单` : '待确认';
+  $('merchantOverdueList').innerHTML = overdue.length ? overdue.map(row => `<article class="merchant-overdue-ticket">
+    <div class="merchant-overdue-ticket-head"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">稽查单 ${escapeHtml(row.inspection_id)}</a><span>事件 ${escapeHtml(row.event_id)} · 店铺 ${escapeHtml(row.shop_id)}</span></div><strong>${escapeHtml(row.age_hours ?? '—')} 小时</strong></div>
+    <p>${escapeHtml(row.description)}</p><div class="merchant-ticket-meta"><span>${escapeHtml(row.brand)}</span><span>${escapeHtml(row.inspect_status)}</span><span>创建 ${escapeHtml(row.created_at)}</span>${row.risk_hits?.map(hit => `<b class="risk-tag">${escapeHtml(hit.label)}</b>`).join('') || ''}</div>
+  </article>`).join('') : app.open_synced_at && !queueStale
+    ? '<div class="merchant-overdue-empty"><strong>0 单</strong><span>本次已同步的当前未完成队列中，没有创建满24小时且仍未稽查的商家APP稽查单。</span></div>'
+    : '<div class="merchant-overdue-empty uncertain"><strong>暂不能确认</strong><span>当前未完成队列同步缺失或已超过15分钟，不能据此判断超24小时工单为0。</span></div>';
+
+  $('merchantPendingList').innerHTML = (app.pending_records || []).length ? app.pending_records.map(row => `<article class="merchant-pending-ticket"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">稽查单 ${escapeHtml(row.inspection_id)}</a><strong class="${row.overdue_24h ? 'overdue-label' : ''}">${escapeHtml(row.age_hours ?? '—')} 小时 · ${escapeHtml(row.inspect_status)}</strong></div><p>${escapeHtml(row.description)}</p><small>店铺 ${escapeHtml(row.shop_id)} · ${escapeHtml(row.brand)} · 创建 ${escapeHtml(row.created_at)}</small></article>`).join('') : '<p class="empty">本次队列没有未完成单据；请结合上方同步状态核实。</p>';
+  const records = app.records || [];
+  $('merchantRecordHint').textContent = `${records.length} 单 · 未完成优先，同状态按创建时间排列`;
+  $('merchantTypeBreakdown').innerHTML = (app.type_breakdown || []).map(item => `<span>${escapeHtml(item.name)} <b>${item.count}</b><small>前日${item.previous} · ${signed(item.delta)}</small></span>`).join('') || '<span>暂无结果类型数据</span>';
+  $('merchantRecordTable').innerHTML = records.length ? records.map(row => `<tr>
+    <td><a class="merchant-id" href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.inspection_id)}</a><small>事件 ${escapeHtml(row.event_id)}<br>店铺 ${escapeHtml(row.shop_id)}</small></td>
+    <td>${escapeHtml(row.brand)}${row.is_ka ? '<small class="ka-mark">KA</small>' : ''}</td>
+    <td class="merchant-description">${escapeHtml(row.description)}${row.risk_hits?.length ? `<div class="merchant-risk-tags">${row.risk_hits.map(hit => `<b>${escapeHtml(hit.label)}</b>`).join('')}</div>` : ''}</td>
+    <td><span class="merchant-state ${row.is_open ? 'pending' : ''}">${escapeHtml(row.inspect_status)}</span></td>
+    <td>${escapeHtml(row.abnormal_state)}<small>${escapeHtml(row.abnormal_type)}</small></td>
+    <td>${escapeHtml(row.created_at)}<small>${row.completed_at ? `完成 ${escapeHtml(row.completed_at)}` : '尚未完成'}</small></td>
+    <td>${row.is_open ? `${escapeHtml(row.age_hours ?? '—')} 小时` : '—'}${row.overdue_24h ? '<small class="overdue-label">已超24小时</small>' : ''}</td>
+  </tr>`).join('') : '<tr><td colspan="7" class="empty">所选日期暂无商家APP发起的稽查单。</td></tr>';
 }
 
 function renderCategoryInsights(rows) {
@@ -171,14 +213,18 @@ function renderCategoryDetail(row) {
   </article>`).join('') : '<div class="empty">该类别暂无敏感风险或处理异常工单</div>';
 }
 
-function renderAlerts(growth, riskSummary, riskRecords, operationalSummary) {
+function renderAlerts(growth, riskSummary, riskRecords, operationalSummary, appRiskRecords = []) {
+  const combinedRiskRecords = [...riskRecords, ...appRiskRecords.map(row => ({
+    ...row, ticket_id: row.inspection_id, status: row.inspect_status, handler: '商家APP', source_label: '商家APP'
+  }))].sort((a, b) => ({'紧急': 0, '高': 1, '关注': 2}[a.risk_level] ?? 3) - ({'紧急': 0, '高': 1, '关注': 2}[b.risk_level] ?? 3));
   $('growthAlerts').innerHTML = growth.length ? growth.map(a => `<div class="alert"><strong>${escapeHtml(a.category)}：${a.current} 单</strong><small>近7日均值 ${a.avg7}，高出 ${a.delta_vs_avg} 单</small></div>`).join('') : '<div class="empty">当日各类型均未明显偏离近7日常态</div>';
-  $('riskCount').textContent = `${riskRecords.length} 单`;
-  $('riskSummary').innerHTML = riskSummary.length ? riskSummary.map(a => `<span>${escapeHtml(a.risk)} <b>${a.count}</b></span>`).join('') : '<span class="muted">暂无敏感风险词命中</span>';
-  $('riskTicketList').innerHTML = riskRecords.length ? riskRecords.map(r => `<article class="risk-ticket ${r.risk_level==='紧急'?'critical':''}">
-    <div class="risk-ticket-head"><div><a href="${escapeHtml(r.source_url)}" target="_blank" rel="noopener">工单 ${escapeHtml(r.ticket_id)}</a><span>${escapeHtml(r.shop_id)} · ${escapeHtml(r.brand)}</span></div><span class="risk-level">${escapeHtml(r.risk_level)}</span></div>
+  const appRiskSummary = appRiskRecords.length ? `<span>商家APP风险工单 <b>${appRiskRecords.length}</b></span>` : '';
+  $('riskCount').textContent = `${combinedRiskRecords.length} 单`;
+  $('riskSummary').innerHTML = `${riskSummary.length ? riskSummary.map(a => `<span>${escapeHtml(a.risk)} <b>${a.count}</b></span>`).join('') : appRiskRecords.length ? '<span>风险线索来自商家APP</span>' : '<span class="muted">暂无敏感风险词命中</span>'}${appRiskSummary}`;
+  $('riskTicketList').innerHTML = combinedRiskRecords.length ? combinedRiskRecords.map(r => `<article class="risk-ticket ${r.risk_level==='紧急'?'critical':''}">
+    <div class="risk-ticket-head"><div><a href="${escapeHtml(r.source_url)}" target="_blank" rel="noopener">${r.source_label ? '稽查单' : '工单'} ${escapeHtml(r.ticket_id)}</a><span>${r.source_label ? '商家APP · ' : ''}${escapeHtml(r.shop_id)} · ${escapeHtml(r.brand)}</span></div><span class="risk-level">${escapeHtml(r.risk_level)}</span></div>
     <div class="risk-hit-list">${r.risk_hits.map(hit => `<span><b>${escapeHtml(hit.label)}</b> · 命中“${escapeHtml(hit.matched_text)}” · ${escapeHtml(hit.source)}</span>`).join('')}</div>
-    <p>${escapeHtml(r.description)}</p><small>${escapeHtml(r.created_at.slice(11,16))} · ${escapeHtml(r.status)} · ${escapeHtml(r.handler)}</small>
+    <p>${escapeHtml(r.description)}</p><small>${escapeHtml((r.created_at || '').slice(11,16))} · ${escapeHtml(r.status)} · ${escapeHtml(r.handler)}</small>
   </article>`).join('') : '<div class="empty risk-empty">当日未识别到明确的暴力、舆情、未成年人、公共卫生或人身安全风险工单</div>';
   $('anomalySummary').innerHTML = operationalSummary.length ? operationalSummary.slice(0,8).map(a => `<div class="anomaly-chip"><span>${escapeHtml(a.reason)}</span><b>${a.count}</b></div>`).join('') : '<div class="empty">暂无处理或数据质量异常</div>';
 }

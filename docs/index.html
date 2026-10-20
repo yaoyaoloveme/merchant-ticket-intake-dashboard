@@ -46,13 +46,13 @@
 
     <section class="metric-grid" aria-label="核心指标">
       <article class="metric primary"><span>当日新增（天润 + 商家APP）</span><strong id="totalMetric">—</strong><div id="sourceBreakdown" class="source-breakdown"><span>天润工单：—</span><span>商家APP发起：—</span></div><small id="totalCompare">—</small></article>
-      <article class="metric"><span>最大增长类型</span><strong id="driverMetric">—</strong><small id="driverCompare">—</small></article>
-      <article class="metric"><span>需关注记录</span><strong id="anomalyMetric">—</strong><small id="anomalyCompare">—</small></article>
-      <article class="metric ka"><span>KA 商家占比</span><strong id="kaMetric">—</strong><small id="kaCompare">—</small></article>
+      <article class="metric"><span>天润最大增长类型</span><strong id="driverMetric">—</strong><small id="driverCompare">—</small></article>
+      <article class="metric"><span>天润需关注记录</span><strong id="anomalyMetric">—</strong><small id="anomalyCompare">—</small></article>
+      <article class="metric ka"><span>KA 商家占比（天润）</span><strong id="kaMetric">—</strong><small id="kaCompare">—</small></article>
     </section>
 
     <section class="panel trend-panel">
-      <div class="panel-head"><div><span class="index">01</span><h2>每日新增趋势</h2></div><p>柱高代表当日新增量，颜色拆分工单类型</p></div>
+      <div class="panel-head"><div><span class="index">01</span><h2>每日新增趋势</h2></div><p>新增合计 = 天润工单 + 商家APP；纯色为天润类型，条纹为APP</p></div>
       <div id="trendLegend" class="legend"></div>
       <div class="trend-scroll">
         <div id="trendChart" class="trend-chart" aria-label="每日新增工单堆叠趋势图"></div>
@@ -63,8 +63,9 @@
       <div class="panel-head"><div><span class="index">02</span><h2>商家APP发起稽查单</h2></div><p>独立统计 APP 入口新增；超24小时清单依据当前未完成队列与创建时间核对</p></div>
       <div id="merchantAppSummary" class="merchant-app-summary"></div>
       <section class="merchant-overdue-section">
-        <div class="merchant-subhead"><div><h3>当前超24小时未稽查</h3><p>仅列仍处于源站未完成队列且创建已满24小时的单据</p></div><strong id="merchantOverdueCount">—</strong></div>
+        <div class="merchant-subhead"><div><h3>当前超24小时未稽查</h3><p>覆盖所有创建日期，当前未完成且状态为未稽查/待稽查；不包含稽查中的单据</p></div><strong id="merchantOverdueCount">—</strong></div>
         <div id="merchantOverdueList" class="merchant-overdue-list"></div>
+        <details class="merchant-pending-details"><summary>查看全部当前未完成稽查单（含未满24小时）</summary><div id="merchantPendingList" class="merchant-pending-list"></div></details>
       </section>
       <div class="merchant-subhead merchant-records-head"><div><h3>所选日期 APP 工单明细</h3><p id="merchantRecordHint">—</p></div><div id="merchantTypeBreakdown" class="merchant-type-breakdown"></div></div>
       <div class="merchant-table-wrap">
