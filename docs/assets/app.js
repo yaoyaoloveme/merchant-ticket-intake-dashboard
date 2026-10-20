@@ -20,6 +20,7 @@ let publicLoadedRevision = null;
 let publicRequest = 0;
 let assignmentConfirmToken = null;
 let assignmentEnabled = false;
+let pendingTickets = [];
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
