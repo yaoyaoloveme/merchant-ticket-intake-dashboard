@@ -24,6 +24,39 @@
   <main>
     <div id="statusLine" class="status-line">正在读取数据…</div>
 
+    <section id="dispatchPanel" class="panel dispatch-panel" hidden>
+      <div class="panel-head"><div><span class="index">00</span><h2>天润工单分派中心</h2></div><p>仅限本机管理员使用 · Cookie不会显示或进入公开看板 · 真实分派默认关闭</p></div>
+      <div class="dispatch-warning"><strong>生产操作提醒</strong><span>这里只接收重新登录后取得的新Cookie。提交前会预览工单与接收人，并要求二次确认。</span></div>
+      <div class="dispatch-grid">
+        <section class="dispatch-block">
+          <div class="dispatch-block-head"><h3>1. 天润连接</h3><span id="tianrunConnectionBadge" class="connection-badge">未检测</span></div>
+          <p id="tianrunConnectionText" class="dispatch-help">尚未读取连接状态。</p>
+          <label class="dispatch-field"><span>新Cookie</span><textarea id="tianrunCookie" rows="4" autocomplete="off" spellcheck="false" placeholder="在本机粘贴完整Cookie；保存成功后输入框立即清空"></textarea></label>
+          <div class="dispatch-actions"><button id="saveCookieBtn" type="button">保存并检测</button><button id="testCookieBtn" class="secondary-btn" type="button">仅检测连接</button></div>
+        </section>
+        <section class="dispatch-block">
+          <div class="dispatch-block-head"><h3>2. 查询接收人</h3><span class="step-note">必须姓名或工号唯一匹配</span></div>
+          <label class="dispatch-field"><span>姓名或工号</span><input id="tianrunUserQuery" type="text" placeholder="例如：05435"></label>
+          <div class="dispatch-actions"><button id="searchUserBtn" class="secondary-btn" type="button">查询员工</button></div>
+          <div id="tianrunUserResults" class="user-results"><p class="empty">尚未查询</p></div>
+        </section>
+      </div>
+      <section class="dispatch-block assignment-block">
+        <div class="dispatch-block-head"><h3>3. 单工单预览与分派</h3><span id="assignModeBadge" class="connection-badge locked">真实分派关闭</span></div>
+        <div class="assignment-form">
+          <label class="dispatch-field"><span>工单ID</span><input id="assignTicketId" inputmode="numeric" placeholder="必须已同步到本地看板"></label>
+          <label class="dispatch-field"><span>接收人工号或姓名</span><input id="assignRecipient" placeholder="建议填写唯一工号"></label>
+          <label class="dispatch-field reason-field"><span>分派理由</span><input id="assignReason" maxlength="200" placeholder="例如：早班多付漏付工单定时分派"></label>
+          <button id="previewAssignBtn" type="button">生成分派预览</button>
+        </div>
+        <div id="assignmentPreview" class="assignment-preview"><p class="empty">尚未生成预览，不会直接提交生产操作。</p></div>
+      </section>
+      <section class="dispatch-block audit-block">
+        <div class="dispatch-block-head"><h3>4. 最近分派台账</h3><button id="refreshAuditBtn" class="secondary-btn compact-btn" type="button">刷新台账</button></div>
+        <div class="table-wrap dispatch-audit-wrap"><table class="dispatch-audit"><thead><tr><th>时间</th><th>工单</th><th>原处理人</th><th>接收人</th><th>状态</th><th>返回信息</th></tr></thead><tbody id="assignmentAudit"><tr><td colspan="6" class="empty">暂无分派记录</td></tr></tbody></table></div>
+      </section>
+    </section>
+
     <section class="metric-grid" aria-label="核心指标">
       <article class="metric primary"><span>当日新增</span><strong id="totalMetric">—</strong><small id="totalCompare">—</small></article>
       <article class="metric"><span>最大增长类型</span><strong id="driverMetric">—</strong><small id="driverCompare">—</small></article>

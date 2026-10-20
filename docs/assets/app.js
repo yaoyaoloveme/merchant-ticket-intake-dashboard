@@ -18,6 +18,8 @@ let publicManifest = null;
 let publicSnapshot = null;
 let publicLoadedRevision = null;
 let publicRequest = 0;
+let assignmentConfirmToken = null;
+let assignmentEnabled = false;
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -319,6 +321,110 @@ async function syncEvidence() {
   }
 }
 
+async function adminJson(url, options = {}) {
+  const response = await fetch(url, options);
+  let result;
+  try { result = await response.json(); }
+  catch (_) { throw new Error(`管理接口返回异常（HTTP ${response.status}）`); }
+  if (!response.ok || !result.ok) throw new Error(result.error || `请求失败（HTTP ${response.status}）`);
+  return result;
+}
+
+function renderTianrunStatus(data) {
+  assignmentEnabled = Boolean(data.assign_enabled);
+  const badge = $('tianrunConnectionBadge');
+  badge.className = `connection-badge ${data.connection === 'ok' ? 'ok' : data.connection === 'missing' ? 'locked' : data.connection}`;
+  badge.textContent = data.connection === 'ok' ? '连接正常' : data.connection === 'expired' ? '登录失效' : data.connection === 'error' ? '连接异常' : data.configured ? '待检测' : '未配置';
+  const names = data.cookie_names?.length ? ` · 已保存字段：${data.cookie_names.join('、')}` : '';
+  const updated = data.updated_at ? ` · 更新于 ${data.updated_at.replace('T',' ')}` : '';
+  $('tianrunConnectionText').textContent = `${data.message || '尚未检测'}${updated}${names}`;
+  $('assignModeBadge').className = `connection-badge ${assignmentEnabled ? 'error' : 'locked'}`;
+  $('assignModeBadge').textContent = assignmentEnabled ? '真实分派已开启' : '真实分派关闭';
+}
+
+async function loadTianrunStatus(test = false) {
+  try {
+    const result = await adminJson(`/api/tianrun/status${test ? '?test=1' : ''}`);
+    renderTianrunStatus(result.data);
+  } catch (error) {
+    renderTianrunStatus({connection:'error',message:error.message,configured:false,assign_enabled:false});
+  }
+}
+
+async function saveTianrunCookie() {
+  const button = $('saveCookieBtn');
+  const cookie = $('tianrunCookie').value.trim();
+  if (!cookie) { $('tianrunConnectionText').textContent = '请先粘贴重新登录后取得的新Cookie。'; return; }
+  button.disabled = true; button.textContent = '正在验证…';
+  try {
+    const result = await adminJson('/api/tianrun/cookie', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie})});
+    $('tianrunCookie').value = '';
+    renderTianrunStatus(result.data);
+  } catch (error) {
+    $('tianrunConnectionBadge').className = 'connection-badge error';
+    $('tianrunConnectionBadge').textContent = '保存失败';
+    $('tianrunConnectionText').textContent = error.message;
+  } finally { button.disabled = false; button.textContent = '保存并检测'; }
+}
+
+async function searchTianrunUsers() {
+  const query = $('tianrunUserQuery').value.trim();
+  const container = $('tianrunUserResults');
+  if (query.length < 2) { container.innerHTML = '<p class="empty">请输入至少2个字符的姓名或工号</p>'; return; }
+  container.innerHTML = '<p class="empty">正在查询天润员工…</p>';
+  try {
+    const result = await adminJson(`/api/tianrun/users?q=${encodeURIComponent(query)}`);
+    container.innerHTML = result.data.length ? result.data.map(row => `<button type="button" class="user-result" data-cno="${escapeHtml(row.cno)}" data-name="${escapeHtml(row.name)}"><strong>${escapeHtml(row.name)}</strong><span>工号 ${escapeHtml(row.cno) || '—'}</span></button>`).join('') : '<p class="empty">没有找到员工</p>';
+    container.querySelectorAll('.user-result').forEach(button => button.addEventListener('click', () => {
+      $('assignRecipient').value = button.dataset.cno || button.dataset.name;
+    }));
+  } catch (error) { container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
+async function previewAssignment() {
+  assignmentConfirmToken = null;
+  const container = $('assignmentPreview');
+  const payload = {ticket_id:$('assignTicketId').value.trim(),recipient:$('assignRecipient').value.trim(),reason:$('assignReason').value.trim()};
+  container.innerHTML = '<p class="empty">正在读取工单和接收人…</p>';
+  try {
+    const result = await adminJson('/api/tianrun/assignment/preview', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const {ticket, recipient, reason, confirm_token: token, assign_enabled: enabled} = result.data;
+    assignmentConfirmToken = token; assignmentEnabled = enabled;
+    const phrase = `确认分派 ${ticket.ticket_id}`;
+    container.innerHTML = `<article class="preview-card"><h4>工单 ${escapeHtml(ticket.ticket_id)} → ${escapeHtml(recipient.name)}（${escapeHtml(recipient.cno)}）</h4>
+      <div class="preview-meta"><span>${escapeHtml(ticket.category)}</span><span>店铺 ${escapeHtml(ticket.shop_id)}</span><span>当前处理人：${escapeHtml(ticket.handler) || '未显示'}</span><span>状态：${escapeHtml(ticket.status)}</span></div>
+      <p>${escapeHtml(ticket.description) || '未填写问题描述'}</p><p><b>分派理由：</b>${escapeHtml(reason)}</p>
+      <div class="confirm-row"><label class="dispatch-field"><span>二次确认：请输入“${escapeHtml(phrase)}”</span><input id="assignmentConfirmation" autocomplete="off" placeholder="${escapeHtml(phrase)}"></label><button id="executeAssignBtn" type="button" ${enabled ? '' : 'disabled'}>${enabled ? '执行真实分派' : '真实分派尚未开启'}</button></div></article>`;
+    if (enabled) $('executeAssignBtn').addEventListener('click', executeAssignment);
+  } catch (error) { container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
+async function executeAssignment() {
+  const button = $('executeAssignBtn');
+  const confirmation = $('assignmentConfirmation').value.trim();
+  button.disabled = true; button.textContent = '正在提交…';
+  try {
+    const result = await adminJson('/api/tianrun/assignment/execute', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_token:assignmentConfirmToken,confirmation})});
+    assignmentConfirmToken = null;
+    $('assignmentPreview').innerHTML = `<div class="status-line">${escapeHtml(result.data.state)}：${escapeHtml(result.data.message)}</div>`;
+    loadAssignmentAudit();
+  } catch (error) {
+    button.disabled = false; button.textContent = '执行真实分派';
+    const old = $('assignmentPreview').querySelector('.status-line.error'); if (old) old.remove();
+    $('assignmentPreview').insertAdjacentHTML('afterbegin', `<div class="status-line error">${escapeHtml(error.message)}</div>`);
+  }
+}
+
+async function loadAssignmentAudit() {
+  try {
+    const result = await adminJson('/api/tianrun/assignment/audit');
+    $('assignmentAudit').innerHTML = result.data.length ? result.data.map(row => {
+      const tone = row.state === '失败' ? 'error' : row.state.includes('待核验') ? 'pending' : 'success';
+      return `<tr><td>${escapeHtml(row.requested_at.replace('T',' '))}</td><td class="ticket-id">${escapeHtml(row.ticket_id)}</td><td>${escapeHtml(row.old_handler) || '—'}</td><td>${escapeHtml(row.target_name)}<br><span class="muted">${escapeHtml(row.target_cno)}</span></td><td><span class="audit-state ${tone}">${escapeHtml(row.state)}</span></td><td>${escapeHtml(row.message)}</td></tr>`;
+    }).join('') : '<tr><td colspan="6" class="empty">暂无分派记录</td></tr>';
+  } catch (error) { $('assignmentAudit').innerHTML = `<tr><td colspan="6" class="empty">${escapeHtml(error.message)}</td></tr>`; }
+}
+
 $('datePicker').addEventListener('change', () => { followsLatestDate = false; loadDashboard(); });
 $('windowPicker').addEventListener('change', loadDashboard);
 $('syncBtn').addEventListener('click', syncData);
@@ -399,6 +505,15 @@ function loadPublicRootCauses() {
 if (isPublicDashboard) {
   $('syncBtn').textContent = '刷新公开数据';
   $('evidenceBtn').hidden = true;
+} else {
+  $('dispatchPanel').hidden = false;
+  $('saveCookieBtn').addEventListener('click', saveTianrunCookie);
+  $('testCookieBtn').addEventListener('click', () => loadTianrunStatus(true));
+  $('searchUserBtn').addEventListener('click', searchTianrunUsers);
+  $('previewAssignBtn').addEventListener('click', previewAssignment);
+  $('refreshAuditBtn').addEventListener('click', loadAssignmentAudit);
+  loadTianrunStatus();
+  loadAssignmentAudit();
 }
 loadDashboard();
 window.setInterval(pollRealtimeStatus, 30000);
