@@ -45,7 +45,7 @@
     <div id="statusLine" class="status-line">正在读取数据…</div>
 
     <section class="metric-grid" aria-label="核心指标">
-      <article class="metric primary"><span>当日新增</span><strong id="totalMetric">—</strong><small id="totalCompare">—</small></article>
+      <article class="metric primary"><span>当日新增（天润 + 商家APP）</span><strong id="totalMetric">—</strong><div id="sourceBreakdown" class="source-breakdown"><span>天润工单：—</span><span>商家APP发起：—</span></div><small id="totalCompare">—</small></article>
       <article class="metric"><span>最大增长类型</span><strong id="driverMetric">—</strong><small id="driverCompare">—</small></article>
       <article class="metric"><span>需关注记录</span><strong id="anomalyMetric">—</strong><small id="anomalyCompare">—</small></article>
       <article class="metric ka"><span>KA 商家占比</span><strong id="kaMetric">—</strong><small id="kaCompare">—</small></article>
@@ -59,9 +59,25 @@
       </div>
     </section>
 
+    <section class="panel merchant-app-panel">
+      <div class="panel-head"><div><span class="index">02</span><h2>商家APP发起稽查单</h2></div><p>独立统计 APP 入口新增；超24小时清单依据当前未完成队列与创建时间核对</p></div>
+      <div id="merchantAppSummary" class="merchant-app-summary"></div>
+      <section class="merchant-overdue-section">
+        <div class="merchant-subhead"><div><h3>当前超24小时未稽查</h3><p>仅列仍处于源站未完成队列且创建已满24小时的单据</p></div><strong id="merchantOverdueCount">—</strong></div>
+        <div id="merchantOverdueList" class="merchant-overdue-list"></div>
+      </section>
+      <div class="merchant-subhead merchant-records-head"><div><h3>所选日期 APP 工单明细</h3><p id="merchantRecordHint">—</p></div><div id="merchantTypeBreakdown" class="merchant-type-breakdown"></div></div>
+      <div class="merchant-table-wrap">
+        <table class="merchant-table">
+          <thead><tr><th>稽查单 / 店铺</th><th>品牌</th><th>问题描述</th><th>稽查状态</th><th>核实结果 / 类型</th><th>创建 / 完成</th><th>当前等待</th></tr></thead>
+          <tbody id="merchantRecordTable"></tbody>
+        </table>
+      </div>
+    </section>
+
     <div class="analysis-sections">
       <section class="panel category-analysis-panel">
-        <div class="panel-head"><div><span class="index">02</span><h2>四类工单业务分析</h2></div><p>点击类别查看今日数量、前日增减、商家主要诉求、共同点及具体风险工单</p></div>
+        <div class="panel-head"><div><span class="index">03</span><h2>四类工单业务分析</h2></div><p>点击类别查看今日数量、前日增减、商家主要诉求、共同点及具体风险工单</p></div>
         <div id="categoryCards" class="category-cards"></div>
         <div class="category-detail">
           <div class="category-detail-head">
@@ -76,13 +92,13 @@
         </div>
       </section>
       <section class="panel risk-radar-panel">
-        <div class="panel-head"><div><span class="index">03</span><h2>高风险雷达</h2></div><p>仅收录命中明确暴力、人身安全、舆情升级、监管举报、未成年人、食品安全、治安、现金或隐私风险的具体工单</p></div>
+        <div class="panel-head"><div><span class="index">04</span><h2>高风险雷达</h2></div><p>仅收录命中明确暴力、人身安全、舆情升级、监管举报、未成年人、食品安全、治安、现金或隐私风险的具体工单</p></div>
         <div class="risk-radar-head"><div id="riskSummary" class="risk-summary"></div><strong id="riskCount">—</strong></div>
         <div id="riskTicketList" class="risk-ticket-list"></div>
       </section>
       <section class="panel root-panel">
         <div class="panel-head root-head">
-          <div><span class="index">04</span><h2>工单级根因台账</h2></div>
+          <div><span class="index">05</span><h2>工单级根因台账</h2></div>
           <p>先看现场实际发生了什么，再判断根因和责任；没有回放证据的工单统一保留为待核实</p>
         </div>
         <div class="root-principle">
@@ -116,7 +132,7 @@
         </div>
       </section>
       <section class="panel alert-panel">
-        <div class="panel-head"><div><span class="index">05</span><h2>运营异常雷达</h2></div><p>保留类型增长、处理时效与数据质量异常；高风险工单请查看上方独立雷达</p></div>
+        <div class="panel-head"><div><span class="index">06</span><h2>运营异常雷达</h2></div><p>保留类型增长、处理时效与数据质量异常；高风险工单请查看上方独立雷达</p></div>
         <details class="radar-details">
           <summary>展开查看运营异常</summary>
           <div class="radar-overview">
@@ -129,14 +145,14 @@
 
     <div class="two-col">
       <section class="panel">
-        <div class="panel-head"><div><span class="index">06</span><h2>工单都在描述什么</h2></div><p>按问题描述关键词归类，可点击查看原始样例</p></div>
+        <div class="panel-head"><div><span class="index">07</span><h2>工单都在描述什么</h2></div><p>按问题描述关键词归类，可点击查看原始样例</p></div>
         <div id="topicsList" class="topic-list"></div>
         <div id="topicSamples" class="sample-box"><p>点击一个问题主题查看工单描述样例。</p></div>
       </section>
     </div>
 
     <section class="panel ka-panel">
-      <div class="panel-head"><div><span class="index">07</span><h2>KA 商家反馈明细</h2></div><p id="kaDefinition">—</p></div>
+      <div class="panel-head"><div><span class="index">08</span><h2>KA 商家反馈明细</h2></div><p id="kaDefinition">—</p></div>
       <div id="kaSummary" class="ka-summary"></div>
       <div class="ka-section-head"><h3>四类工单构成</h3><p>点击类型仅查看对应的 KA 商家与工单</p></div>
       <div id="kaCategoryFilters" class="ka-category-filters" role="tablist" aria-label="KA工单类别筛选"></div>
@@ -145,7 +161,7 @@
     </section>
 
     <section class="panel">
-      <div class="panel-head"><div><span class="index">08</span><h2>需关注工单明细</h2></div><p>仅展示命中异常规则或高风险描述的当日新增工单</p></div>
+      <div class="panel-head"><div><span class="index">09</span><h2>需关注工单明细</h2></div><p>仅展示命中异常规则或高风险描述的当日新增工单</p></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>工单</th><th>店铺 / 品牌</th><th>类型</th><th>问题描述</th><th>异常原因</th><th>当前状态</th></tr></thead>
@@ -154,7 +170,6 @@
       </div>
     </section>
   </main>
-
   <script>window.TICKET_PUBLIC = true;</script>
   <script src="assets/app.js"></script>
 </body>

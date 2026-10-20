@@ -18,9 +18,6 @@ let publicManifest = null;
 let publicSnapshot = null;
 let publicLoadedRevision = null;
 let publicRequest = 0;
-let assignmentConfirmToken = null;
-let assignmentEnabled = false;
-let pendingTickets = [];
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -322,6 +319,7 @@ async function syncEvidence() {
   }
 }
 
+
 $('datePicker').addEventListener('change', () => { followsLatestDate = false; loadDashboard(); });
 $('windowPicker').addEventListener('change', loadDashboard);
 $('syncBtn').addEventListener('click', syncData);
@@ -405,7 +403,3 @@ if (isPublicDashboard) {
 }
 loadDashboard();
 window.setInterval(pollRealtimeStatus, 30000);
-if (!isPublicDashboard) window.setInterval(() => {
-  loadPendingTickets(true);
-  loadTeamMembers();
-}, 5 * 60 * 1000);
