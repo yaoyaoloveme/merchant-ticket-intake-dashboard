@@ -405,4 +405,7 @@ if (isPublicDashboard) {
 }
 loadDashboard();
 window.setInterval(pollRealtimeStatus, 30000);
-if (!isPublicDashboard) window.setInterval(() => loadPendingTickets(true), 5 * 60 * 1000);
+if (!isPublicDashboard) window.setInterval(() => {
+  loadPendingTickets(true);
+  loadTeamMembers();
+}, 5 * 60 * 1000);
