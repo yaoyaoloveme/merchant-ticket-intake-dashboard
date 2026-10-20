@@ -35,7 +35,7 @@ main { max-width: 1440px; margin: -22px auto 70px; padding: 0 28px; position: re
 .dispatch-panel { border-top: 4px solid var(--teal); padding-top: 19px; }
 .dispatch-warning { display: flex; gap: 12px; padding: 11px 13px; margin-bottom: 13px; background: #fff4dc; border: 1px solid #ead29e; color: #725416; }
 .dispatch-warning strong { white-space: nowrap; }.dispatch-warning span { color: #785f28; }
-.dispatch-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 10px; margin-bottom: 10px; }
+.dispatch-grid { display: grid; grid-template-columns: .65fr 1.35fr; gap: 10px; margin-bottom: 10px; }
 .dispatch-block { border: 1px solid var(--line); background: #f8faf8; padding: 15px; min-width: 0; }
 .dispatch-block-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
 .dispatch-block-head h3 { margin: 0; font-size: 15px; }.step-note,.dispatch-help { color: var(--muted); font-size: 12px; }.dispatch-help { margin: 0 0 11px; }
