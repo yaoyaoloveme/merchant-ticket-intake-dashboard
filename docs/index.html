@@ -67,9 +67,10 @@
       <details class="completion-details">
         <summary>查看逐单核验结果</summary>
         <div class="completion-detail-toolbar">
+          <label>工单创建日期<input id="completionDatePicker" type="date" value="2026-10-21"></label>
           <label>类别<select id="completionCategoryFilter"><option value="全部">全部类别</option><option>多付/漏付</option><option>批量核实</option><option>回访工单</option><option>介入问题</option><option>其他</option></select></label>
           <label>结果<select id="completionResultFilter"><option value="全部">全部结果</option><option>24小时内</option><option>超时</option><option>待核验</option></select></label>
-          <span id="completionDetailCount">展开后读取明细</span>
+          <span id="completionDetailCount">选择日期查看当日完成率和逐单结果</span>
         </div>
         <div class="completion-table-wrap"><table class="completion-table"><thead><tr><th>工单</th><th>类别</th><th>商家提单</th><th>首次稽查完成</th><th>耗时</th><th>核验结果</th></tr></thead><tbody id="completionRecordTable"></tbody></table></div>
         <div class="completion-detail-toolbar"><button id="completionPrev" type="button">上一页</button><span id="completionPageLabel"></span><button id="completionNext" type="button">下一页</button></div>

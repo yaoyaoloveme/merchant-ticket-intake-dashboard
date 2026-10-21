@@ -15,6 +15,8 @@ let merchantRankingRevision = null;
 let merchantRankingRequest = 0;
 let completionRecordsCache = null;
 let completionRecordsRequest = 0;
+let completionDayRequest = 0;
+let completionDateChanged = false;
 let completionPage = 1;
 let completionPages = 1;
 let lastAutoSyncFinishedAt = null;
@@ -197,62 +199,86 @@ function renderMerchantRanking(data) {
 
 function renderCompletionRate(rate) {
   if (!rate) return;
-  const previous = rate.previous || {};
-  const delta = Number(rate.rate_24h_delta || 0);
-  const previousLabel = previous.completed && rate.completed ? `${previous.rate_24h}% · ${delta >= 0 ? '+' : ''}${delta} 个百分点` : '暂无可比数据';
   const rateLabel = rate.completed ? `${rate.rate_24h}%` : '暂无可核验样本';
-  $('completionSummary').innerHTML = `<div class="completion-main"><span>可核验样本24小时内完成率</span><strong>${rateLabel}</strong><small class="${previous.completed && rate.completed ? signClass(delta) : ''}">前一周期 ${previousLabel}</small></div>
+  const selectedLabel = rate.selected_date ? `${rate.selected_date} 创建` : '当前统计周期';
+  $('completionSummary').innerHTML = `<div class="completion-main"><span>${selectedLabel} · 可核验样本24小时内完成率</span><strong>${rateLabel}</strong><small>统计范围仅含所选创建日</small></div>
     <div><span>24小时内完成</span><strong>${Number(rate.within_24h || 0).toLocaleString()}</strong><small>纳入分母 ${Number(rate.completed || 0).toLocaleString()} 单</small></div>
     <div><span>可核验实际耗时</span><strong>${Number(rate.verified_time_count || 0).toLocaleString()}</strong><small>只按两端实际时间计算</small></div>
     <div><span>待核验首次节点</span><strong>${Number(rate.pending_verification || 0).toLocaleString()}</strong><small>不纳入完成率分母</small></div>`;
-  $('completionCategories').innerHTML = (rate.categories || []).map(item => { const prior = (previous.categories || []).find(p => p.category === item.category); const priorText = prior?.completed ? `${prior.rate_24h}%` : '暂无可比'; const itemRate = item.completed ? `${item.rate_24h}%` : '暂无样本'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span class="${prior?.completed ? signClass((item.rate_24h || 0) - prior.rate_24h) : ''}">${itemRate}</span></div><div class="completion-category-grid"><span>24小时内 <b>${item.within_24h}</b> / ${item.completed}</span><span>可核验 ${item.verified_time_count}</span><span>待核验 ${item.pending_verification}</span></div><small>前一周期24小时率 ${priorText}</small></article>`; }).join('');
+  $('completionCategories').innerHTML = (rate.categories || []).map(item => { const itemRate = item.completed ? `${item.rate_24h}%` : '暂无样本'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span>${itemRate}</span></div><div class="completion-category-grid"><span>24小时内 <b>${item.within_24h}</b> / ${item.completed}</span><span>可核验 ${item.verified_time_count}</span><span>待核验 ${item.pending_verification}</span></div></article>`; }).join('');
   const excluded = rate.excluded_breakdown || [];
-  $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">待核验：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>本周期未发现待核验工单</span>'}`;
+  $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">待核验：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>当日没有待核验工单</span>'}`;
 }
 
-async function renderCompletionRecords() {
+function weekStartForIso(dayString) {
+  const day = new Date(`${dayString}T00:00:00`);
+  day.setDate(day.getDate() - ((day.getDay() + 6) % 7));
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+}
+
+async function loadCompletionDay() {
+  const requestId = ++completionDayRequest;
+  const selectedDate = $('completionDatePicker').value || dashboardData?.selected_date;
+  if (!selectedDate) return;
+  $('completionDatePicker').value = selectedDate;
+  $('completionDetailCount').textContent = '正在读取所选日期…';
+  try {
+    let payload;
+    if (isPublicDashboard) {
+      const weekStart = weekStartForIso(selectedDate);
+      const weekPath = `data/completion-week-${weekStart}.json`;
+      if (!completionRecordsCache || completionRecordsCache.revision !== publicLoadedRevision || completionRecordsCache.week !== weekStart) {
+        const week = await fetchPublicJson(weekPath);
+        completionRecordsCache = {revision: publicLoadedRevision, week: weekStart, days: week.days};
+      }
+      payload = completionRecordsCache.days.find(day => day.date === selectedDate);
+      if (!payload) throw new Error('该日期不在已发布的最近一周或周快照中');
+    } else {
+      const response = await fetch(`/api/completion-day?date=${encodeURIComponent(selectedDate)}`);
+      const result = await response.json();
+      if (!result.ok) throw new Error(result.error || '当日完成率读取失败');
+      payload = result.data;
+      completionRecordsCache = {revision: selectedDate, week: '', days: [payload]};
+    }
+    if (requestId !== completionDayRequest) return;
+    payload.stats.selected_date = selectedDate;
+    renderCompletionRate(payload.stats);
+    completionRecordsCache.rows = payload.records || [];
+    completionRecordsCache.date = selectedDate;
+    completionPage = 1;
+    renderCompletionRecords();
+  } catch (error) {
+    if (requestId !== completionDayRequest) return;
+    $('completionSummary').innerHTML = `<div class="completion-main"><span>${escapeHtml(selectedDate)} 创建</span><strong>暂不可用</strong><small>${escapeHtml(error.message)}</small></div>`;
+    $('completionCategories').innerHTML = '';
+    $('completionQuality').textContent = '';
+    $('completionRecordTable').innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`;
+    $('completionDetailCount').textContent = '当日数据不可用';
+  }
+}
+
+function renderCompletionRecords() {
   const requestId = ++completionRecordsRequest;
   const body = $('completionRecordTable');
-  body.innerHTML = '<tr><td colspan="6">正在读取逐单结果…</td></tr>';
-  try {
-    if (isPublicDashboard) {
-      if (!completionRecordsCache || completionRecordsCache.revision !== publicLoadedRevision) {
-        completionRecordsCache = {revision: publicLoadedRevision, rows: await fetchPublicJson('data/completion-records.json')};
-      }
-    } else {
-      if (!completionRecordsCache || completionRecordsCache.revision !== $('datePicker').value) {
-        const response = await fetch(`/api/completion-records?date=${encodeURIComponent($('datePicker').value)}`);
-        const result = await response.json();
-        if (!result.ok) throw new Error(result.error || '逐单数据读取失败');
-        if (requestId !== completionRecordsRequest) return;
-        completionRecordsCache = {revision: $('datePicker').value, rows: result.data};
-      }
-    }
-    if (requestId !== completionRecordsRequest) return;
-    const selected = new Date(`${$('datePicker').value}T00:00:00`);
-    const start = new Date(selected); start.setDate(start.getDate() - 29);
-    const category = $('completionCategoryFilter').value;
-    const outcome = $('completionResultFilter').value;
-    const rows = completionRecordsCache.rows.filter(row => {
-      const day = new Date(`${row.created_at.slice(0,10)}T00:00:00`);
-      return day >= start && day <= selected && (!dashboardData.cutoff_time || row.created_at.slice(11,16) <= dashboardData.cutoff_time) && (category === '全部' || row.category === category) && (outcome === '全部' || row.result === outcome);
-    });
-    $('completionDetailCount').textContent = `${rows.length.toLocaleString()} 单 · 当前周期逐单结果`;
-    completionPages = Math.max(1, Math.ceil(rows.length / 50));
-    completionPage = Math.min(completionPage, completionPages);
-    $('completionPageLabel').textContent = `${completionPage} / ${completionPages} 页，每页50单`;
-    $('completionPrev').disabled = completionPage <= 1;
-    $('completionNext').disabled = completionPage >= completionPages;
-    const shown = rows.slice((completionPage - 1) * 50, completionPage * 50);
-    body.innerHTML = shown.length ? shown.map(row => {
-      const seconds = row.elapsed_seconds;
-      const duration = seconds == null ? '—' : `${Math.floor(seconds / 3600)}小时${Math.floor(seconds % 3600 / 60)}分${seconds % 60}秒`;
-      return `<tr><td><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a></td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.first_inspect_completed_at || '—')}</td><td>${duration}</td><td><strong class="completion-result ${row.result === '超时' ? 'late' : row.result === '待核验' ? 'pending' : ''}">${escapeHtml(row.result)}</strong>${row.reason ? `<small>${escapeHtml(row.reason)}</small>` : ''}</td></tr>`;
-    }).join('') : '<tr><td colspan="6">当前筛选没有工单</td></tr>';
-  } catch (error) {
-    if (requestId !== completionRecordsRequest) return;
-    body.innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`;
+  if (!completionRecordsCache?.rows || completionRecordsCache.date !== $('completionDatePicker').value) {
+    body.innerHTML = '<tr><td colspan="6">正在读取逐单结果…</td></tr>';
+    return;
   }
+  const category = $('completionCategoryFilter').value;
+  const outcome = $('completionResultFilter').value;
+  const rows = completionRecordsCache.rows.filter(row => (category === '全部' || row.category === category) && (outcome === '全部' || row.result === outcome));
+  $('completionDetailCount').textContent = `${rows.length.toLocaleString()} 单 · ${$('completionDatePicker').value} 创建`;
+  completionPages = Math.max(1, Math.ceil(rows.length / 50));
+  completionPage = Math.min(completionPage, completionPages);
+  $('completionPageLabel').textContent = `${completionPage} / ${completionPages} 页，每页50单`;
+  $('completionPrev').disabled = completionPage <= 1;
+  $('completionNext').disabled = completionPage >= completionPages;
+  const shown = rows.slice((completionPage - 1) * 50, completionPage * 50);
+  body.innerHTML = shown.length ? shown.map(row => {
+    const seconds = row.elapsed_seconds;
+    const duration = seconds == null ? '—' : `${Math.floor(seconds / 3600)}小时${Math.floor(seconds % 3600 / 60)}分${seconds % 60}秒`;
+    return `<tr><td><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a></td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.first_inspect_completed_at || '—')}</td><td>${duration}</td><td><strong class="completion-result ${row.result === '超时' ? 'late' : row.result === '待核验' ? 'pending' : ''}">${escapeHtml(row.result)}</strong>${row.reason ? `<small>${escapeHtml(row.reason)}</small>` : ''}</td></tr>`;
+  }).join('') : '<tr><td colspan="6">所选日期没有符合筛选条件的工单</td></tr>';
 }
 
 function renderTrend(days) {
