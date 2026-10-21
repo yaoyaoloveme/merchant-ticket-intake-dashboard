@@ -26,6 +26,9 @@ let publicManifest = null;
 let publicSnapshot = null;
 let publicLoadedRevision = null;
 let publicRequest = 0;
+let publicVersionCheckRunning = false;
+let publicReloading = false;
+const publicPageOpenedAt = Date.now();
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -383,14 +386,24 @@ function renderAlerts(growth, riskSummary, riskRecords, operationalSummary, appR
 
 async function pollRealtimeStatus() {
   if (isPublicDashboard) {
+    if (!publicLoadedRevision || publicVersionCheckRunning || publicReloading) return;
+    publicVersionCheckRunning = true;
     try {
       const manifest = await fetchPublicJson('data/index.json');
+      if (manifest.revision !== publicLoadedRevision) {
+        publicReloading = true;
+        const target = new URL(window.location.href);
+        target.searchParams.set('refresh', Date.now().toString());
+        window.location.replace(target.toString());
+        return;
+      }
       publicManifest = manifest;
-      if (manifest.revision !== publicLoadedRevision) await loadPublicDashboard(manifest);
-      else updatePublicStatus();
+      updatePublicStatus();
     } catch (error) {
       $('statusLine').className = 'status-line error';
       $('statusLine').textContent = `自动刷新失败，保留上次数据：${error.message}`;
+    } finally {
+      publicVersionCheckRunning = false;
     }
     return;
   }
@@ -609,4 +622,23 @@ if (isPublicDashboard) {
   $('evidenceBtn').hidden = true;
 }
 loadDashboard();
-window.setInterval(pollRealtimeStatus, 30000);
+if (isPublicDashboard) {
+  const schedulePublicVersionCheck = () => {
+    const elapsed = Date.now() - publicPageOpenedAt;
+    const delay = elapsed < 10 * 60 * 1000 ? 10 * 1000 : 60 * 1000;
+    window.setTimeout(async () => {
+      await pollRealtimeStatus();
+      schedulePublicVersionCheck();
+    }, delay);
+  };
+  const checkAfterResume = () => { void pollRealtimeStatus(); };
+  window.addEventListener('focus', checkAfterResume);
+  window.addEventListener('pageshow', checkAfterResume);
+  window.addEventListener('online', checkAfterResume);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkAfterResume();
+  });
+  schedulePublicVersionCheck();
+} else {
+  window.setInterval(pollRealtimeStatus, 30000);
+}
