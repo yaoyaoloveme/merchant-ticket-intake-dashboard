@@ -162,7 +162,8 @@ function render(data, sync, realtime) {
   completionRecordsCache = null;
   completionRecordsRequest++;
   completionPage = 1;
-  if (document.querySelector('.completion-details').open) renderCompletionRecords();
+  if (!completionDateChanged) $('completionDatePicker').value = data.selected_date;
+  loadCompletionDay();
   renderMerchantApp(data.merchant_app);
   loadMerchantRanking();
   renderCategoryInsights(data.category_insights);
@@ -222,6 +223,7 @@ async function loadCompletionDay() {
   if (!selectedDate) return;
   $('completionDatePicker').value = selectedDate;
   $('completionDetailCount').textContent = '正在读取所选日期…';
+  $('completionRecordTable').innerHTML = '<tr><td colspan="6">正在读取逐单结果…</td></tr>';
   try {
     let payload;
     if (isPublicDashboard) {
@@ -521,6 +523,7 @@ async function syncEvidence() {
 
 $('datePicker').addEventListener('change', () => { followsLatestDate = false; loadDashboard(); });
 $('windowPicker').addEventListener('change', loadDashboard);
+$('completionDatePicker').addEventListener('change', () => { completionDateChanged = true; completionPage = 1; loadCompletionDay(); });
 ['completionCategoryFilter', 'completionResultFilter'].forEach(id => $(id).addEventListener('change', () => { completionPage = 1; renderCompletionRecords(); }));
 $('completionPrev').addEventListener('click', () => { if (completionPage > 1) { completionPage--; renderCompletionRecords(); } });
 $('completionNext').addEventListener('click', () => { if (completionPage < completionPages) { completionPage++; renderCompletionRecords(); } });
@@ -562,6 +565,9 @@ async function loadPublicDashboard(manifest) {
     publicManifest = manifest;
     publicSnapshot = snapshot;
     publicLoadedRevision = manifest.revision;
+    const completionWeeks = manifest.completion_weeks || [];
+    if (completionWeeks.length) $('completionDatePicker').min = completionWeeks[0];
+    $('completionDatePicker').max = manifest.latest_date;
     $('datePicker').min = manifest.dates[manifest.dates.length - 1];
     $('datePicker').max = manifest.latest_date;
     $('datePicker').value = selected;

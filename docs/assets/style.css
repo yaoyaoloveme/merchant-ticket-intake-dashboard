@@ -83,6 +83,7 @@ main { max-width: 1440px; margin: -22px auto 70px; padding: 0 28px; position: re
 .completion-detail-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); }
 .completion-detail-toolbar label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
 .completion-detail-toolbar select { min-width: 120px; padding: 6px 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); }
+.completion-detail-toolbar input[type="date"] { min-width: 145px; padding: 6px 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); font: inherit; }
 .completion-detail-toolbar > span { margin-left: auto; color: var(--muted); font-size: 11px; }
 .completion-table-wrap { overflow-x: auto; max-height: 560px; border-top: 1px solid var(--line); }
 .completion-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 11px; }
