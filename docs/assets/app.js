@@ -13,6 +13,10 @@ let selectedKaCategory = '全部';
 let merchantRankingData = null;
 let merchantRankingRevision = null;
 let merchantRankingRequest = 0;
+let completionRecordsCache = null;
+let completionRecordsRequest = 0;
+let completionPage = 1;
+let completionPages = 1;
 let lastAutoSyncFinishedAt = null;
 let followsLatestDate = true;
 const $ = (id) => document.getElementById(id);
@@ -153,6 +157,10 @@ function render(data, sync, realtime) {
   $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
   renderTrend(data.daily_trend);
   renderCompletionRate(data.completion_rate);
+  completionRecordsCache = null;
+  completionRecordsRequest++;
+  completionPage = 1;
+  if (document.querySelector('.completion-details').open) renderCompletionRecords();
   renderMerchantApp(data.merchant_app);
   loadMerchantRanking();
   renderCategoryInsights(data.category_insights);
@@ -191,14 +199,60 @@ function renderCompletionRate(rate) {
   if (!rate) return;
   const previous = rate.previous || {};
   const delta = Number(rate.rate_24h_delta || 0);
-  const previousLabel = previous.completed ? `${previous.rate_24h}% · ${delta >= 0 ? '+' : ''}${delta} 个百分点` : '暂无可比数据';
-  $('completionSummary').innerHTML = `<div class="completion-main"><span>总体24小时完成率</span><strong>${rate.rate_24h}%</strong><small class="${previous.completed ? signClass(delta) : ''}">前一周期 ${previousLabel}</small></div>
-    <div><span>24小时内完成</span><strong>${Number(rate.within_24h || 0).toLocaleString()}</strong><small>已完结有效样本 ${Number(rate.completed || 0).toLocaleString()}</small></div>
-    <div><span>48小时内完成率</span><strong>${rate.rate_48h}%</strong><small>${Number(rate.within_48h || 0).toLocaleString()} 单</small></div>
-    <div><span>72小时内完成率</span><strong>${rate.rate_72h}%</strong><small>${Number(rate.within_72h || 0).toLocaleString()} 单</small></div>`;
-  $('completionCategories').innerHTML = (rate.categories || []).map(item => { const prior = (previous.categories || []).find(p => p.category === item.category); const priorText = prior?.completed ? `${prior.rate_24h}%` : '暂无可比'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span class="${prior?.completed ? signClass((item.rate_24h || 0) - prior.rate_24h) : ''}">${item.rate_24h}%</span></div><div class="completion-category-grid"><span>24小时内 <b>${item.within_24h}</b> / ${item.completed}</span><span>48小时 <b>${item.rate_48h}%</b></span><span>72小时 <b>${item.rate_72h}%</b></span></div><small>前一周期24小时率 ${priorText} · 排除 ${item.excluded} 单</small></article>`; }).join('');
+  const previousLabel = previous.completed && rate.completed ? `${previous.rate_24h}% · ${delta >= 0 ? '+' : ''}${delta} 个百分点` : '暂无可比数据';
+  const rateLabel = rate.completed ? `${rate.rate_24h}%` : '暂无可核验样本';
+  $('completionSummary').innerHTML = `<div class="completion-main"><span>可核验样本24小时内完成率</span><strong>${rateLabel}</strong><small class="${previous.completed && rate.completed ? signClass(delta) : ''}">前一周期 ${previousLabel}</small></div>
+    <div><span>24小时内完成</span><strong>${Number(rate.within_24h || 0).toLocaleString()}</strong><small>纳入分母 ${Number(rate.completed || 0).toLocaleString()} 单</small></div>
+    <div><span>可核验实际耗时</span><strong>${Number(rate.verified_time_count || 0).toLocaleString()}</strong><small>另有标记计入 ${Number(rate.feedback_marker_count || 0)} 单</small></div>
+    <div><span>待核验首次节点</span><strong>${Number(rate.pending_verification || 0).toLocaleString()}</strong><small>不纳入完成率分母</small></div>`;
+  $('completionCategories').innerHTML = (rate.categories || []).map(item => { const prior = (previous.categories || []).find(p => p.category === item.category); const priorText = prior?.completed ? `${prior.rate_24h}%` : '暂无可比'; const itemRate = item.completed ? `${item.rate_24h}%` : '暂无样本'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span class="${prior?.completed ? signClass((item.rate_24h || 0) - prior.rate_24h) : ''}">${itemRate}</span></div><div class="completion-category-grid"><span>24小时内 <b>${item.within_24h}</b> / ${item.completed}</span><span>可核验 ${item.verified_time_count}</span><span>待核验 ${item.pending_verification}</span></div><small>前一周期24小时率 ${priorText} · 标记计入 ${item.feedback_marker_count} 单</small></article>`; }).join('');
   const excluded = rate.excluded_breakdown || [];
-  $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">未纳入分母：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>本周期没有发现需要排除的完结时间数据</span>'}`;
+  $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">待核验：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>本周期未发现待核验工单</span>'}`;
+}
+
+async function renderCompletionRecords() {
+  const requestId = ++completionRecordsRequest;
+  const body = $('completionRecordTable');
+  body.innerHTML = '<tr><td colspan="6">正在读取逐单结果…</td></tr>';
+  try {
+    if (isPublicDashboard) {
+      if (!completionRecordsCache || completionRecordsCache.revision !== publicLoadedRevision) {
+        completionRecordsCache = {revision: publicLoadedRevision, rows: await fetchPublicJson('data/completion-records.json')};
+      }
+    } else {
+      if (!completionRecordsCache || completionRecordsCache.revision !== $('datePicker').value) {
+        const response = await fetch(`/api/completion-records?date=${encodeURIComponent($('datePicker').value)}`);
+        const result = await response.json();
+        if (!result.ok) throw new Error(result.error || '逐单数据读取失败');
+        if (requestId !== completionRecordsRequest) return;
+        completionRecordsCache = {revision: $('datePicker').value, rows: result.data};
+      }
+    }
+    if (requestId !== completionRecordsRequest) return;
+    const selected = new Date(`${$('datePicker').value}T00:00:00`);
+    const start = new Date(selected); start.setDate(start.getDate() - 29);
+    const category = $('completionCategoryFilter').value;
+    const outcome = $('completionResultFilter').value;
+    const rows = completionRecordsCache.rows.filter(row => {
+      const day = new Date(`${row.created_at.slice(0,10)}T00:00:00`);
+      return day >= start && day <= selected && (!dashboardData.cutoff_time || row.created_at.slice(11,16) <= dashboardData.cutoff_time) && (category === '全部' || row.category === category) && (outcome === '全部' || row.result === outcome);
+    });
+    $('completionDetailCount').textContent = `${rows.length.toLocaleString()} 单 · 当前周期逐单结果`;
+    completionPages = Math.max(1, Math.ceil(rows.length / 50));
+    completionPage = Math.min(completionPage, completionPages);
+    $('completionPageLabel').textContent = `${completionPage} / ${completionPages} 页，每页50单`;
+    $('completionPrev').disabled = completionPage <= 1;
+    $('completionNext').disabled = completionPage >= completionPages;
+    const shown = rows.slice((completionPage - 1) * 50, completionPage * 50);
+    body.innerHTML = shown.length ? shown.map(row => {
+      const seconds = row.elapsed_seconds;
+      const duration = seconds == null ? '—' : `${Math.floor(seconds / 3600)}小时${Math.floor(seconds % 3600 / 60)}分${seconds % 60}秒`;
+      return `<tr><td><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a></td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.first_inspect_completed_at || '—')}</td><td>${duration}</td><td><strong class="completion-result ${row.result === '超时' ? 'late' : row.result === '待核验' ? 'pending' : ''}">${escapeHtml(row.result)}</strong>${row.reason ? `<small>${escapeHtml(row.reason)}</small>` : ''}</td></tr>`;
+    }).join('') : '<tr><td colspan="6">当前筛选没有工单</td></tr>';
+  } catch (error) {
+    if (requestId !== completionRecordsRequest) return;
+    body.innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`;
+  }
 }
 
 function renderTrend(days) {
@@ -441,6 +495,10 @@ async function syncEvidence() {
 
 $('datePicker').addEventListener('change', () => { followsLatestDate = false; loadDashboard(); });
 $('windowPicker').addEventListener('change', loadDashboard);
+['completionCategoryFilter', 'completionResultFilter'].forEach(id => $(id).addEventListener('change', () => { completionPage = 1; renderCompletionRecords(); }));
+$('completionPrev').addEventListener('click', () => { if (completionPage > 1) { completionPage--; renderCompletionRecords(); } });
+$('completionNext').addEventListener('click', () => { if (completionPage < completionPages) { completionPage++; renderCompletionRecords(); } });
+document.querySelector('.completion-details').addEventListener('toggle', event => { if (event.currentTarget.open) renderCompletionRecords(); });
 $('merchantRankingSearch').addEventListener('input', () => { if (merchantRankingData) renderMerchantRanking(merchantRankingData); });
 $('syncBtn').addEventListener('click', syncData);
 $('evidenceBtn').addEventListener('click', syncEvidence);

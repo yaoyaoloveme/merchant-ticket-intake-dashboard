@@ -78,6 +78,18 @@ main { max-width: 1440px; margin: -22px auto 70px; padding: 0 28px; position: re
 .completion-category-grid b { color: var(--ink); }.completion-category > small { color: var(--muted); font-size: 10px; line-height: 1.45; }
 .completion-quality { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 11px; padding: 9px 11px; background: #f5f7f5; color: var(--muted); font-size: 11px; }
 .completion-excluded { color: #8b5f18; }
+.completion-details { margin-top: 12px; border: 1px solid var(--line); background: #fff; }
+.completion-details > summary { padding: 11px 13px; cursor: pointer; font-weight: 700; font-size: 12px; }
+.completion-detail-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.completion-detail-toolbar label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+.completion-detail-toolbar select { min-width: 120px; padding: 6px 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); }
+.completion-detail-toolbar > span { margin-left: auto; color: var(--muted); font-size: 11px; }
+.completion-table-wrap { overflow-x: auto; max-height: 560px; border-top: 1px solid var(--line); }
+.completion-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 11px; }
+.completion-table th,.completion-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.completion-table th { position: sticky; top: 0; background: #f4f6f5; color: var(--muted); z-index: 1; }
+.completion-table td small { display: block; max-width: 290px; margin-top: 3px; color: #8b5f18; line-height: 1.4; }
+.completion-result { color: var(--teal); }.completion-result.late { color: #b44132; }.completion-result.pending { color: #8b5f18; }
 .app-legend-swatch,.app-bar-seg { background: repeating-linear-gradient(135deg,#78a79a 0,#78a79a 4px,#b5d4c9 4px,#b5d4c9 7px); }
 .merchant-app-panel { border-top: 4px solid #78a79a; padding-top: 19px; }
 .merchant-app-kpis { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)) minmax(180px,1.2fr); border: 1px solid var(--line); }
