@@ -120,12 +120,26 @@ function render(data, sync, realtime) {
   const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
   $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
   renderTrend(data.daily_trend);
+  renderCompletionRate(data.completion_rate);
   renderMerchantApp(data.merchant_app);
   renderCategoryInsights(data.category_insights);
   renderAlerts(data.growth_anomalies, data.risk_summary, data.risk_records, data.operational_anomaly_summary, data.merchant_app?.risk_records || []);
   renderTopics(data.topics);
   renderKA(data.ka);
   renderAnomalyTable(data.anomaly_records);
+}
+
+function renderCompletionRate(rate) {
+  if (!rate) return;
+  const previous = rate.previous || {};
+  const delta = Number(rate.rate_24h_delta || 0);
+  $('completionSummary').innerHTML = `<div class="completion-main"><span>总体24小时完成率</span><strong>${rate.rate_24h}%</strong><small class="${signClass(delta)}">前一周期 ${previous.rate_24h ?? 0}% · ${delta >= 0 ? '+' : ''}${delta} 个百分点</small></div>
+    <div><span>24小时内完成</span><strong>${Number(rate.within_24h || 0).toLocaleString()}</strong><small>已完结有效样本 ${Number(rate.completed || 0).toLocaleString()}</small></div>
+    <div><span>48小时内完成率</span><strong>${rate.rate_48h}%</strong><small>${Number(rate.within_48h || 0).toLocaleString()} 单</small></div>
+    <div><span>72小时内完成率</span><strong>${rate.rate_72h}%</strong><small>${Number(rate.within_72h || 0).toLocaleString()} 单</small></div>`;
+  $('completionCategories').innerHTML = (rate.categories || []).map(item => `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span class="${signClass((item.rate_24h || 0) - ((previous.categories || []).find(p => p.category === item.category)?.rate_24h || 0))}">${item.rate_24h}%</span></div><div class="completion-category-grid"><span>24小时内 <b>${item.within_24h}</b> / ${item.completed}</span><span>48小时 <b>${item.rate_48h}%</b></span><span>72小时 <b>${item.rate_72h}%</b></span></div><small>前一周期24小时率 ${((previous.categories || []).find(p => p.category === item.category)?.rate_24h ?? 0)}% · 排除 ${item.excluded} 单</small></article>`).join('');
+  const excluded = rate.excluded_breakdown || [];
+  $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">未纳入分母：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>本周期没有发现需要排除的完结时间数据</span>'}`;
 }
 
 function renderTrend(days) {
