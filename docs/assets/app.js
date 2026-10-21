@@ -199,11 +199,11 @@ function renderCompletionRate(rate) {
   if (!rate) return;
   const rateLabel = rate.completed ? `${rate.rate_24h}%` : '暂无可核验样本';
   const selectedLabel = rate.selected_date ? `${rate.selected_date} 创建` : '当前统计周期';
-  $('completionSummary').innerHTML = `<div class="completion-main"><span>${selectedLabel} · 可核验样本24小时内完成率</span><strong>${rateLabel}</strong><small>统计范围仅含所选创建日</small></div>
-    <div><span>24小时内完成</span><strong>${Number(rate.within_24h || 0).toLocaleString()}</strong><small>纳入分母 ${Number(rate.completed || 0).toLocaleString()} 单</small></div>
-    <div><span>可核验实际耗时</span><strong>${Number(rate.verified_time_count || 0).toLocaleString()}</strong><small>只按两端实际时间计算</small></div>
-    <div><span>待核验首次节点</span><strong>${Number(rate.pending_verification || 0).toLocaleString()}</strong><small>不纳入完成率分母</small></div>`;
-  $('completionCategories').innerHTML = (rate.categories || []).map(item => { const itemRate = item.completed ? `${item.rate_24h}%` : '暂无样本'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span>${itemRate}</span></div><div class="completion-category-grid"><span>24小时内 <b>${item.within_24h}</b> / ${item.completed}</span><span>可核验 ${item.verified_time_count}</span><span>待核验 ${item.pending_verification}</span></div></article>`; }).join('');
+  $('completionSummary').innerHTML = `<div class="completion-main"><span>${selectedLabel} · 24小时内完成率</span><strong>${rateLabel}</strong><small>完成数 ÷ 纳入分母；当前未完成也计入分母</small></div>
+    <div><span>24小时内完成 / 分母</span><strong>${Number(rate.within_24h || 0).toLocaleString()} / ${Number(rate.completed || 0).toLocaleString()}</strong><small>未完成和已超时均计入分母</small></div>
+    <div><span>当前未完成</span><strong>${Number(rate.not_completed_count || 0).toLocaleString()}</strong><small>其中已超过24小时 ${Number(rate.overdue_not_completed_count || 0).toLocaleString()} 单</small></div>
+    <div><span>仍待核验</span><strong>${Number(rate.pending_verification || 0).toLocaleString()}</strong><small>详情异常或时间冲突，不纳入分母</small></div>`;
+  $('completionCategories').innerHTML = (rate.categories || []).map(item => { const itemRate = item.completed ? `${item.rate_24h}%` : '暂无样本'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span>${itemRate}</span></div><div class="completion-category-grid"><span>完成 / 分母 <b>${item.within_24h} / ${item.completed}</b></span><span>未完成 <b>${item.not_completed_count}</b>（超24h ${item.overdue_not_completed_count}）</span><span>待核验 <b>${item.pending_verification}</b></span></div></article>`; }).join('');
   const excluded = rate.excluded_breakdown || [];
   $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">待核验：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>当日没有待核验工单</span>'}`;
 }
@@ -275,7 +275,8 @@ function renderCompletionRecords() {
   body.innerHTML = shown.length ? shown.map(row => {
     const seconds = row.elapsed_seconds;
     const duration = seconds == null ? '—' : `${Math.floor(seconds / 3600)}小时${Math.floor(seconds % 3600 / 60)}分${seconds % 60}秒`;
-    return `<tr><td><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a></td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.first_inspect_completed_at || '—')}</td><td>${duration}</td><td><strong class="completion-result ${row.result === '超时' ? 'late' : row.result === '待核验' ? 'pending' : ''}">${escapeHtml(row.result)}</strong>${row.reason ? `<small>${escapeHtml(row.reason)}</small>` : ''}</td></tr>`;
+    const resultClass = row.result === '超时' || row.result === '超时未完成' ? 'late' : row.result === '待核验' ? 'pending' : row.result === '未完成' ? 'incomplete' : '';
+    return `<tr><td><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a></td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.first_inspect_completed_at || '—')}</td><td>${duration}</td><td><strong class="completion-result ${resultClass}">${escapeHtml(row.result)}</strong>${row.reason ? `<small>${escapeHtml(row.reason)}</small>` : ''}</td></tr>`;
   }).join('') : '<tr><td colspan="6">所选日期没有符合筛选条件的工单</td></tr>';
 }
 
