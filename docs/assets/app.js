@@ -12,6 +12,7 @@ let selectedCategoryIndex = 0;
 let selectedKaCategory = '全部';
 let merchantRankingData = null;
 let merchantRankingRevision = null;
+let merchantRankingRequest = 0;
 let lastAutoSyncFinishedAt = null;
 let followsLatestDate = true;
 const $ = (id) => document.getElementById(id);
@@ -45,14 +46,13 @@ async function loadDashboard() {
 }
 
 async function loadMerchantRanking() {
+  const requestId = ++merchantRankingRequest;
   const list = $('merchantRankingList');
   try {
     let data;
     if (isPublicDashboard) {
       if (!merchantRankingData || merchantRankingRevision !== publicLoadedRevision) {
         data = await fetchPublicJson('data/merchant-ranking.json');
-        merchantRankingData = data;
-        merchantRankingRevision = publicLoadedRevision;
       } else {
         data = merchantRankingData;
       }
@@ -62,12 +62,15 @@ async function loadMerchantRanking() {
       if (!result.ok) throw new Error(result.error || '读取商家排行失败');
       data = result.data;
     }
+    if (requestId !== merchantRankingRequest) return;
     merchantRankingData = data;
+    merchantRankingRevision = publicLoadedRevision;
     renderMerchantRanking(data);
   } catch (error) {
+    if (requestId !== merchantRankingRequest) return;
     $('merchantRankingCoverage').className = 'merchant-ranking-coverage uncertain';
     $('merchantRankingCoverage').textContent = error.message;
-    list.innerHTML = '<p class="empty">排行数据暂时无法读取</p>';
+    if (!merchantRankingData) list.innerHTML = '<p class="empty">排行数据暂时无法读取</p>';
   }
 }
 
@@ -167,19 +170,20 @@ function renderMerchantRanking(data) {
   const visibleRows = rankRows.filter(row => `${row.brand} ${row.shop_id}`.toLowerCase().includes(search));
   const summary = $('merchantRankingSummary');
   summary.innerHTML = `<div><span>纳入排行商家</span><strong>${Number(data.merchant_count || 0).toLocaleString()}</strong><small>${data.period_start} 至 ${data.period_end}</small></div>
-    <div><span>天润工单</span><strong>${Number(data.tianrun_count || 0).toLocaleString()}</strong><small>按天润工单 ID 计数</small></div>
-    <div><span>商家 APP 稽查单</span><strong>${Number(data.merchant_app_count || 0).toLocaleString()}</strong><small>按 APP 稽查单计数</small></div>
-    <div><span>合计</span><strong>${Number(data.total_count || 0).toLocaleString()}</strong><small>跨入口不去重</small></div>`;
+    <div><span>可归集天润</span><strong>${Number(data.tianrun_count || 0).toLocaleString()}</strong><small>按天润工单 ID 计数</small></div>
+    <div><span>可归集商家 APP</span><strong>${Number(data.merchant_app_count || 0).toLocaleString()}</strong><small>按 APP 稽查单 ID 计数</small></div>
+    <div><span>可归集合计</span><strong>${Number(data.total_count || 0).toLocaleString()}</strong><small>跨入口不去重</small></div>`;
   const coverageText = complete
-    ? `完整覆盖 90 / 90 天 · ${data.period_start} 至 ${data.period_end}`
+    ? `已完成双来源逐日查询 90 / 90 天 · ${data.period_start} 至 ${data.period_end}，截止日持续更新；统计范围为源看板可查记录。`
     : `数据覆盖不足：已确认双来源 ${coverage.fully_synced_days || 0} / 90 天，连续覆盖最近 ${coverage.contiguous_days_to_end || 0} 天；首个未确认日期 ${coverage.first_missing_date || '—'}。未同步日期的“0单”不作为已核实数据。`;
   $('merchantRankingCoverage').className = `merchant-ranking-coverage ${complete ? 'complete' : 'uncertain'}`;
   $('merchantRankingCoverage').textContent = coverageText;
-  $('merchantRankingDefinition').textContent = `${data.definition} 无店铺ID未匹配：天润 ${data.unmatched_tianrun_count || 0} 单，APP ${data.unmatched_merchant_app_count || 0} 单。当前显示前 ${rankRows.length} 名。`;
-  $('merchantRankingList').innerHTML = visibleRows.length ? visibleRows.map(row => `<details class="merchant-rank-row">
+  $('merchantRankingDefinition').textContent = `${data.definition} 无店铺ID未匹配：天润 ${data.unmatched_tianrun_count || 0} 单，APP ${data.unmatched_merchant_app_count || 0} 单。当前显示前 ${rankRows.length} 名，搜索仅在本榜内。`;
+  const openShops = new Set([...$('merchantRankingList').querySelectorAll('details[open]')].map(row => row.dataset.shopId));
+  $('merchantRankingList').innerHTML = visibleRows.length ? visibleRows.map(row => `<details class="merchant-rank-row" data-shop-id="${escapeHtml(row.shop_id)}" ${openShops.has(String(row.shop_id)) ? 'open' : ''}>
     <summary><span class="merchant-rank-number">${row.rank}</span><span class="merchant-rank-identity"><strong>${escapeHtml(row.brand || '未匹配品牌')}</strong><small>店铺 ID ${escapeHtml(row.shop_id)}${row.is_ka ? ' · KA' : ''}</small></span>
-    <strong class="merchant-rank-total">${row.total}</strong><span>${row.tianrun_count}</span><span>${row.merchant_app_count}</span><span>${row.last_7_count}</span><span class="merchant-rank-date">${escapeHtml(row.last_ticket_at || '—')}</span><span class="merchant-rank-toggle" aria-hidden="true"></span></summary>
-    <div class="merchant-rank-tickets">${row.tickets.map(ticket => `<article class="merchant-rank-ticket"><div><a href="${escapeHtml(ticket.source_url)}" target="_blank" rel="noopener">${escapeHtml(ticket.source)} ${escapeHtml(ticket.ticket_id)}</a><span>${escapeHtml(ticket.category)}</span></div><p>${escapeHtml(ticket.description) || '未填写问题描述'}</p><small>${escapeHtml(ticket.created_at)} · ${escapeHtml(ticket.status)}</small></article>`).join('')}</div>
+    <strong class="merchant-rank-total">${row.total}</strong><span class="merchant-rank-tianrun">${row.tianrun_count}</span><span class="merchant-rank-app">${row.merchant_app_count}</span><span class="merchant-rank-week">${row.last_7_count}</span><span class="merchant-rank-date">${escapeHtml(row.last_ticket_at || '—')}</span><span class="merchant-rank-toggle" aria-hidden="true"></span></summary>
+    <div class="merchant-rank-tickets">${row.tickets.map(ticket => `<article class="merchant-rank-ticket"><div><a href="${escapeHtml(ticket.source_url)}" target="_blank" rel="noopener">${escapeHtml(ticket.source_label)} ${escapeHtml(ticket.ticket_id)}</a><span>${escapeHtml(ticket.category)}</span></div><p>${escapeHtml(ticket.description) || '未填写问题描述'}</p><small>${escapeHtml(ticket.created_at)} · ${escapeHtml(ticket.status)}</small></article>`).join('')}</div>
   </details>`).join('') : '<p class="empty">没有匹配的商家；如果结果为空，请检查所选日期范围内数据是否已同步。</p>';
 }
 
