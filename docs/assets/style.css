@@ -70,7 +70,7 @@ main { max-width: 1440px; margin: -22px auto 70px; padding: 0 28px; position: re
 .completion-summary span,.completion-summary small { display: block; color: var(--muted); font-size: 11px; }
 .completion-summary strong { display: block; margin: 4px 0; color: var(--teal); font-size: 29px; line-height: 1.15; }
 .completion-main { background: #eef6f5; }.completion-main strong { color: var(--blue); font-size: 36px; }
-.completion-categories { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+.completion-categories { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 8px; }
 .completion-category { border: 1px solid var(--line); padding: 12px; background: #fbfcfb; min-width: 0; }
 .completion-category-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
 .completion-category-head strong { font-size: 13px; }.completion-category-head span { color: var(--teal); font-size: 22px; font-weight: 800; }
