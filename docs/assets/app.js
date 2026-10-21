@@ -14,7 +14,6 @@ let merchantRankingData = null;
 let merchantRankingRevision = null;
 let merchantRankingRequest = 0;
 let completionRecordsCache = null;
-let completionRecordsRequest = 0;
 let completionDayRequest = 0;
 let completionDateChanged = false;
 let completionPage = 1;
@@ -158,9 +157,7 @@ function render(data, sync, realtime) {
   const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
   $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
   renderTrend(data.daily_trend);
-  renderCompletionRate(data.completion_rate);
   completionRecordsCache = null;
-  completionRecordsRequest++;
   completionPage = 1;
   if (!completionDateChanged) $('completionDatePicker').value = data.selected_date;
   loadCompletionDay();
@@ -260,7 +257,6 @@ async function loadCompletionDay() {
 }
 
 function renderCompletionRecords() {
-  const requestId = ++completionRecordsRequest;
   const body = $('completionRecordTable');
   if (!completionRecordsCache?.rows || completionRecordsCache.date !== $('completionDatePicker').value) {
     body.innerHTML = '<tr><td colspan="6">正在读取逐单结果…</td></tr>';
