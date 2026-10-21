@@ -26,6 +26,8 @@ h1 { margin: 0; font-size: clamp(28px,4vw,48px); letter-spacing: -.04em; line-he
 .controls label { color: #bad0cc; font-size: 12px; display: grid; gap: 5px; }
 input,select,button { font: inherit; }
 .controls input,.controls select { border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: #fff; border-radius: 5px; padding: 9px 10px; min-height: 39px; color-scheme: dark; }
+.header-link { display: inline-flex; align-items: center; min-height: 39px; padding: 9px 14px; border: 1px solid rgba(255,255,255,.24); border-radius: 5px; background: rgba(255,255,255,.08); color: #fff; font-weight: 700; text-decoration: none; }
+.header-link:hover { background: rgba(255,255,255,.15); }
 button { border: 0; background: var(--orange); color: #fff; border-radius: 5px; padding: 10px 16px; cursor: pointer; font-weight: 700; min-height: 39px; }
 button:disabled { opacity: .55; cursor: wait; }
 .secondary-btn,.page-btn { background: #174c47; }
