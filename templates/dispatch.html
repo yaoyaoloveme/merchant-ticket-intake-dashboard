@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>天润工单派单</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dispatch.css') }}">
+</head>
+<body class="dispatch-page">
+  <header class="topbar dispatch-topbar">
+    <div>
+      <p class="eyebrow">TIANRUN · DISPATCH CENTER</p>
+      <h1>天润工单派单</h1>
+      <p class="subtitle">独立操作页·选工单、选当班人员、核对方案后一次执行</p>
+    </div>
+    <nav class="dispatch-page-nav" aria-label="页面导航">
+      <a href="/">返回分析看板</a>
+    </nav>
+  </header>
+
+  <main class="dispatch-page-main">
+    <section id="dispatchPanel" class="panel dispatch-panel" hidden>
+      <div class="panel-head"><div><span class="index">01</span><h2>派单工作台</h2></div><p>预览只生成方案；执行后会按源工单处理人持续核验</p></div>
+      <div class="dispatch-connection">
+        <div><span id="tianrunConnectionBadge" class="connection-badge">正在检测</span><span id="tianrunConnectionText">正在读取连接状态…</span></div>
+        <span id="assignModeBadge" class="connection-badge locked">读取分派状态</span>
+      </div>
+      <details id="connectionSettings" class="dispatch-settings">
+        <summary>更新天润登录 / 连接设置</summary>
+        <p class="dispatch-help">仅在本机保存 Cookie，保存并验证后清空输入框。登录失效时在此更新。</p>
+        <label class="dispatch-field"><span>新 Cookie</span><textarea id="tianrunCookie" rows="3" autocomplete="off" spellcheck="false" placeholder="粘贴重新登录后取得的 Cookie"></textarea></label>
+        <div class="dispatch-actions"><button id="saveCookieBtn" type="button">保存并检测</button><button id="testCookieBtn" class="secondary-btn" type="button">检测连接</button></div>
+      </details>
+      <div class="dispatch-workspace">
+        <section class="dispatch-block dispatch-pool">
+          <div class="dispatch-block-head"><h3>待领取值守工单</h3><button id="refreshPendingBtn" class="secondary-btn compact-btn" type="button">刷新工单池</button></div>
+          <div id="dispatchPoolStats" class="dispatch-pool-stats"></div>
+          <div class="dispatch-filters">
+            <label>工单类型<select id="dispatchCategory"><option value="">全部类型</option><option>多付/漏付</option><option>批量核实</option><option>回访工单</option><option>介入问题</option><option>其他</option></select></label>
+            <label>等待时长<select id="dispatchWait"><option value="">全部时长</option><option value="120">≥ 2 小时</option><option value="480">≥ 8 小时</option><option value="1440">≥ 24 小时</option></select></label>
+            <label>风险线索<select id="dispatchRisk"><option value="">全部工单</option><option value="any">有风险线索</option><option value="紧急">紧急线索</option></select></label>
+            <label>商家<select id="dispatchKa"><option value="">全部商家</option><option value="ka">KA 商家</option><option value="non-ka">非 KA 商家</option></select></label>
+            <label class="dispatch-search">搜索工单 / 店铺 / 描述中的稽查号<input id="dispatchSearch" type="search" placeholder="输入编号、品牌或问题关键词"></label>
+          </div>
+          <div class="ticket-pool-toolbar"><div><strong id="pendingTicketCount">—</strong><span id="dispatchVisibleCount"></span></div><div><button id="selectAllTicketsBtn" class="text-btn" type="button">选择筛选结果</button><button id="clearTicketsBtn" class="text-btn" type="button">清空选择</button></div></div>
+          <p id="pendingTicketStatus" class="dispatch-help" role="status">正在读取工单池…</p>
+          <div id="pendingTicketList" class="pending-ticket-list"><p class="empty">正在读取待领取工单…</p></div>
+          <p class="dispatch-help pool-footnote">仅包含“值守客服问题处理组”的待领取 / 待接单工单。等待时长用于排序参考，未设置业务超时标准。风险为原文线索，需人工核实。</p>
+        </section>
+        <aside class="dispatch-sidebar">
+          <section class="dispatch-block">
+            <div class="dispatch-block-head"><h3>当班人员与今日记录</h3><span id="selectedMemberCount" class="step-note">已选 0 人</span></div>
+            <p class="dispatch-help">请勾选实际当班人员，当天记住选择。下列数量仅统计今日通过本页提交的工单，不代表天润实际在手量。</p>
+            <div class="selection-toolbar"><button id="selectAllMembersBtn" class="text-btn" type="button">全选组员</button><button id="clearMembersBtn" class="text-btn" type="button">清空</button><span>按今日提交量升序</span></div>
+            <div id="teamMemberList" class="team-member-list"><p class="empty">正在读取组员…</p></div>
+          </section>
+          <section class="dispatch-block dispatch-basket">
+            <h3 id="selectionSummary">已选 0 单 · 0 人</h3>
+            <div id="dispatchSelectedTypes" class="dispatch-chips"></div>
+            <p id="dispatchSelectedNames" class="dispatch-help">请勾选实际当班人员</p>
+            <div id="dispatchEstimate" class="dispatch-estimate"></div>
+            <label class="dispatch-field"><span>风险工单优先交给（可选）</span><select id="riskRecipient"><option value="">参与均衡推荐</option></select></label>
+            <label class="dispatch-field"><span>分派理由</span><input id="assignReason" maxlength="200" value="值守客服问题处理组待领取工单分派"></label>
+            <p id="dispatchSelectionHint" class="dispatch-help" role="status">请选择工单与当班人员</p>
+            <button id="previewAssignBtn" type="button" disabled>生成分派方案</button>
+          </section>
+        </aside>
+      </div>
+      <section id="assignmentPreview" class="assignment-preview" aria-live="polite"><p class="empty">勾选工单和人员后生成方案，可逐单调整接收人。</p></section>
+      <details class="dispatch-history">
+        <summary>分派记录与结果核验 <span id="dispatchAuditCount"></span></summary>
+        <div class="dispatch-block">
+          <div class="dispatch-block-head"><h3>最近分派记录</h3><div><button id="verifyAssignBtn" class="secondary-btn compact-btn" type="button">核验待确认结果</button> <button id="refreshAuditBtn" class="text-btn" type="button">刷新记录</button></div></div>
+          <p id="dispatchVerifyStatus" class="dispatch-help" role="status">按源工单库的处理人核验，可能存在同步延迟；未查到不判失败。提交中、待核验与结果待确认工单不会重复分派。</p>
+          <div class="table-wrap dispatch-audit-wrap"><table class="dispatch-audit"><thead><tr><th>提交时间</th><th>工单 / 类型</th><th>原处理人</th><th>接收人</th><th>结果</th><th>说明</th></tr></thead><tbody id="assignmentAudit"><tr><td colspan="6" class="empty">暂无分派记录</td></tr></tbody></table></div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='dispatch.js') }}"></script>
+  <script>window.DashboardDispatch.init();</script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>工单运营工作台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}">
+</head>
+<body>
+  <div class="workspace-shell">
+    <aside class="workspace-sidebar" id="workspaceSidebar">
+      <div class="brand">
+        <span class="brand-mark">工</span>
+        <div><strong>工单运营工作台</strong><small>Operations Workbench</small></div>
+      </div>
+
+      <nav class="workspace-nav" aria-label="看板导航">
+        <p class="nav-section">分析看板</p>
+        <button class="nav-item active" data-view="overview" type="button">
+          <span class="nav-icon">▤</span><span>综合工作台</span>
+        </button>
+        <button class="nav-item" data-view="employee" type="button">
+          <span class="nav-icon">◎</span><span>员工工单卡点</span><b id="employeeBadge">—</b>
+        </button>
+        <button class="nav-item" data-view="daily" type="button">
+          <span class="nav-icon">▥</span><span>每日新增工单</span><b id="dailyBadge">—</b>
+        </button>
+        <button class="nav-item" data-view="reports" type="button">
+          <span class="nav-icon">▧</span><span>日报中心</span><b id="reportsBadge">—</b>
+        </button>
+
+        <p class="nav-section secondary">辅助工具</p>
+        <a class="nav-item" href="/complaint-audit" target="_blank" rel="noreferrer">
+          <span class="nav-icon">⌕</span><span>客诉稽查分析</span><i>↗</i>
+        </a>
+        <a id="dispatchPageLink" class="nav-item" href="/dispatch" target="_blank" rel="noreferrer">
+          <span class="nav-icon">⇅</span><span>派单工作台</span><i>↗</i>
+        </a>
+      </nav>
+
+      <div class="sidebar-status">
+        <span class="status-dot"></span>
+        <div><strong>内网数据源</strong><small id="sidebarUpdate">正在读取更新时间</small></div>
+      </div>
+    </aside>
+
+    <section class="workspace-main">
+      <header class="mobile-bar">
+        <button id="menuToggle" type="button" aria-label="打开导航">☰</button>
+        <strong>工单运营工作台</strong>
+      </header>
+
+      <main id="overviewView" class="overview-view">
+        <section class="overview-head">
+          <div>
+            <p>OPERATIONS OVERVIEW</p>
+            <h1>综合工作台</h1>
+            <span id="overviewSubtitle">汇总员工存量、时效卡点与每日新增风险</span>
+          </div>
+          <button id="overviewRefresh" class="primary-action" type="button">刷新数据</button>
+        </section>
+
+        <div id="overviewNotice" class="overview-notice">正在读取两个看板的数据…</div>
+
+        <section class="metric-grid" aria-label="核心指标">
+          <article class="metric-card"><span>员工当前存量</span><strong id="metricStock">—</strong><small id="metricEmployees">覆盖 — 人</small></article>
+          <article class="metric-card warning"><span>超过 48 小时</span><strong id="metricOver48">—</strong><small id="metricOver48Rate">占当前存量 —</small></article>
+          <article class="metric-card danger"><span>超过 120 小时</span><strong id="metricOver120">—</strong><small id="metricOver120Rate">优先推进长期积压</small></article>
+          <article class="metric-card accent"><span>今日新增工单</span><strong id="metricDaily">—</strong><small id="metricDailyCompare">较昨日 —</small></article>
+          <article class="metric-card"><span>高风险工单</span><strong id="metricRisk">—</strong><small id="metricAnomaly">需关注记录 —</small></article>
+        </section>
+
+        <section class="overview-grid">
+          <article class="overview-panel wide">
+            <div class="panel-head"><div><h2>员工进件与完结趋势</h2><p>最近 7 天，用于判断存量是新增流入还是处理速度不足</p></div><div class="legend"><span class="created">创建</span><span class="completed">完结</span></div></div>
+            <div id="employeeTrend" class="mini-chart"></div>
+          </article>
+          <article class="overview-panel">
+            <div class="panel-head"><div><h2>当前处理关注</h2><p>从员工卡点看板提取</p></div></div>
+            <div class="focus-list">
+              <div><span>负载最高员工</span><strong id="focusEmployee">—</strong><small id="focusEmployeeCount">—</small></div>
+              <div><span>今日完结</span><strong id="focusCompleted">—</strong><small id="focusCreated">今日创建 —</small></div>
+            </div>
+            <button class="text-action" data-open-view="employee" type="button">进入员工卡点看板 →</button>
+          </article>
+
+          <article class="overview-panel wide">
+            <div class="panel-head"><div><h2>每日新增趋势</h2><p>天润工单与商家 APP 入口合计</p></div></div>
+            <div id="dailyTrend" class="mini-chart single"></div>
+          </article>
+          <article class="overview-panel">
+            <div class="panel-head"><div><h2>今日新增关注</h2><p>从每日新增分析提取</p></div></div>
+            <div class="focus-list">
+              <div><span>增长最多类型</span><strong id="focusDriver">—</strong><small id="focusDriverDelta">—</small></div>
+              <div><span>数据日期</span><strong id="focusDate">—</strong><small id="focusDailyUpdate">等待同步时间</small></div>
+            </div>
+            <button class="text-action" data-open-view="daily" type="button">进入每日新增分析 →</button>
+          </article>
+        </section>
+      </main>
+
+      <main id="reportsView" class="reports-view" hidden>
+        <section class="overview-head reports-head">
+          <div>
+            <p>DAILY REPORT ARCHIVE</p>
+            <h1>日报中心</h1>
+            <span id="reportsSubtitle">统一归档每天 18:00 与 23:59 生成的双看板日报</span>
+          </div>
+          <button id="reportsRefresh" class="primary-action" type="button">刷新归档</button>
+        </section>
+
+        <div id="reportsNotice" class="overview-notice">正在读取日报归档…</div>
+
+        <section class="report-layout">
+          <aside class="report-library">
+            <div class="report-library-head">
+              <div><h2>历史日报</h2><p id="reportArchiveCount">正在统计</p></div>
+              <label class="report-filter" for="reportDateFilter">日期<select id="reportDateFilter"><option value="">全部日期</option></select></label>
+            </div>
+            <div id="reportList" class="report-list" aria-live="polite"></div>
+          </aside>
+
+          <article class="report-reader">
+            <div class="report-reader-head">
+              <div>
+                <div class="report-title-line"><h2 id="reportTitle">选择一份日报</h2><span id="reportStatus" class="report-status" hidden></span></div>
+                <p id="reportMeta">日报生成后会自动出现在这里</p>
+              </div>
+              <div class="report-actions">
+                <button id="reportCopy" type="button" hidden>复制正文</button>
+                <a id="reportMarkdown" href="#" hidden>下载报告</a>
+                <a id="reportDownload" href="#" hidden>下载原始数据</a>
+                <a id="reportSeparate" href="#" target="_blank" rel="noreferrer" hidden>单独打开</a>
+              </div>
+            </div>
+            <div id="reportEmpty" class="report-empty">暂无可查看的正式日报</div>
+            <iframe id="reportFrame" title="双看板日报正文" sandbox="allow-same-origin" hidden></iframe>
+          </article>
+        </section>
+      </main>
+
+      <section id="frameView" class="frame-view" hidden>
+        <div class="frame-head">
+          <div><p id="frameEyebrow">ANALYSIS</p><h1 id="frameTitle">看板</h1><span id="frameDescription"></span></div>
+          <button id="openSeparate" type="button">单独打开</button>
+        </div>
+        <iframe id="dashboardFrame" title="工单分析看板"></iframe>
+      </section>
+    </section>
+  </div>
+  <div class="sidebar-mask" id="sidebarMask"></div>
+  <script src="{{ url_for('static', filename='workspace.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>客诉稽查分析 · 登录</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='complaint_audit.css') }}">
+</head>
+<body class="audit-login-page">
+  <main class="audit-login-card">
+    <div class="audit-mark">CA</div>
+    <p class="eyebrow">PRIVATE ANALYTICS</p>
+    <h1>客诉稽查分析</h1>
+    <p class="login-copy">该页面包含客服姓名与责任记录，仅限已授权的内网人员访问。</p>
+    {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+    {% if configured %}
+    <form method="post" class="login-form">
+      <label for="password">统一访问口令</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+      <button type="submit">进入看板</button>
+    </form>
+    {% else %}
+    <div class="login-error">访问口令尚未配置。请在看板所在Mac上运行配置程序后重新打开。</div>
+    {% endif %}
+    <small>登录失败只记录时间、客户端地址和结果，不记录口令。</small>
+  </main>
+</body>
+</html>

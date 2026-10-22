@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>客诉稽查实时分析</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='complaint_audit.css') }}">
+</head>
+<body>
+  <header class="audit-header">
+    <div>
+      <p class="eyebrow">COMPLAINT AUDIT · VERIFIED FACTS ONLY</p>
+      <h1>客诉稽查实时分析</h1>
+      <p>当前按完成处理时间统计唯一稽查单；审核通过后才进入正式客诉结果。</p>
+    </div>
+    <div class="header-actions">
+      <a href="/" class="ghost-link">原工单看板</a>
+      <label class="ghost-button import-trigger">导入Forge数据<input id="importFile" type="file" accept=".xlsx" hidden></label>
+      <button id="syncButton" type="button" class="ghost-button">接口同步</button>
+      <form method="post" action="/complaint-audit/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="ghost-button">退出</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="audit-shell">
+    <section class="sync-strip" id="syncStrip">
+      <div><span class="status-dot"></span><strong id="freshnessText">正在读取同步状态…</strong></div>
+      <div class="sync-times">
+        <span>源数据 <b id="sourceTime">—</b></span>
+        <span>本地同步 <b id="localTime">—</b></span>
+        <span>耗时 <b id="syncDuration">—</b></span>
+      </div>
+    </section>
+    <div id="importStatus" class="import-status" hidden></div>
+
+    <section class="filter-panel">
+      <div class="filter-grid">
+        <label>统计月份<input id="monthFilter" type="month" min="{{ earliest_month }}" max="{{ current_month }}" value="{{ current_month }}"></label>
+        <label>日期从<input id="dateFrom" type="date"></label>
+        <label>日期到<input id="dateTo" type="date"></label>
+        <label>审核状态<select id="reviewFilter"><option value="">全部</option><option>审核通过</option><option>待审核</option><option>审核退回</option><option>结果冲突</option></select></label>
+        <label>客诉结果<select id="resultFilter"><option value="">全部</option><option>客诉成立</option><option>客诉不成立</option><option>未判定</option><option>结果冲突</option></select></label>
+        <label>责任主体<select id="responsibilityFilter"><option value="">全部</option></select></label>
+        <label>被投诉客服<select id="agentFilter"><option value="">全部</option></select></label>
+        <label>品牌<select id="brandFilter"><option value="">全部</option></select></label>
+        <label class="search-filter">工单 / 稽查单 / 店铺 / 内容<input id="keywordFilter" type="search" placeholder="输入ID、品牌、分类或结论"></label>
+      </div>
+      <div class="filter-actions"><button id="resetFilters" type="button">清空筛选</button><span id="filterStatus">默认展示本月全部已稽查单</span></div>
+    </section>
+
+    <section class="metric-grid" id="metricGrid">
+      <button class="metric-card metric-primary" data-bucket="inspected"><span>本月已稽查</span><strong id="metricInspected">—</strong><small id="metricMom">唯一稽查单</small></button>
+      <button class="metric-card" data-bucket="approved"><span>审核通过</span><strong id="metricApproved">—</strong><small>含结果明确、未判定及冲突</small></button>
+      <button class="metric-card metric-success" data-bucket="upheld"><span>客诉成立</span><strong id="metricUpheld">—</strong><small>审核通过且正式字段为“是”</small></button>
+      <button class="metric-card metric-blue" data-bucket="not_upheld"><span>客诉不成立</span><strong id="metricNotUpheld">—</strong><small>审核通过且正式字段为“否”</small></button>
+      <button class="metric-card metric-rate"><span>客诉成立率</span><strong id="metricRate">—</strong><small>成立 ÷（成立＋不成立）</small></button>
+      <button class="metric-card" data-bucket="undetermined"><span>未判定</span><strong id="metricUndetermined">—</strong><small>已通过但结果字段为空</small></button>
+      <button class="metric-card" data-bucket="pending"><span>待审核</span><strong id="metricPending">—</strong><small>不进入正式结果</small></button>
+      <button class="metric-card" data-bucket="returned"><span>审核退回</span><strong id="metricReturned">—</strong><small>不进入正式结果</small></button>
+      <button class="metric-card metric-danger" data-bucket="conflict"><span>结果冲突</span><strong id="metricConflict">—</strong><small>同稽查单审核通过结果不一致</small></button>
+      <button class="metric-card"><span>涉及人工客服</span><strong id="metricAgents">—</strong><small>被投诉客服去重人数</small></button>
+    </section>
+
+    <section class="analysis-grid">
+      <article class="panel trend-panel">
+        <div class="panel-head">
+          <div><p class="eyebrow">TREND</p><h2>稽查与客诉结果趋势</h2></div>
+          <div class="segmented"><button class="active" data-granularity="day">按日</button><button data-granularity="week">按周</button></div>
+        </div>
+        <div class="chart-legend"><span><i class="legend-inspected"></i>已稽查</span><span><i class="legend-upheld"></i>客诉成立</span><span><i class="legend-not-upheld"></i>客诉不成立</span><span><i class="legend-rate"></i>成立率</span></div>
+        <div class="chart-scroll"><svg id="trendChart" class="trend-chart" role="img" aria-label="客诉稽查趋势图"></svg></div>
+      </article>
+
+      <article class="panel fact-panel">
+        <div class="panel-head"><div><p class="eyebrow">FACT SUMMARY</p><h2>事实摘要</h2></div><span class="rule-badge">固定规则生成</span></div>
+        <div id="factList" class="fact-list"></div>
+        <p class="panel-note">仅陈述正式字段中的数量、比例与变化，不推测因果。</p>
+      </article>
+    </section>
+
+    <section class="analysis-grid responsibility-grid">
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">RESPONSIBILITY</p><h2>客诉成立责任分布</h2></div></div>
+        <div id="responsibilityChart" class="responsibility-chart"></div>
+      </article>
+      <article class="panel ranking-panel">
+        <div class="panel-head"><div><p class="eyebrow">AGENT RANKING</p><h2>客服样本与正式责任</h2></div><small>默认按人工客服正式责任成立数排序</small></div>
+        <div class="table-wrap compact-table"><table><thead><tr><th>被投诉客服</th><th>被投诉次数</th><th>人工客服责任成立</th><th>全部客诉成立率</th><th>有效样本</th></tr></thead><tbody id="rankingBody"></tbody></table></div>
+      </article>
+    </section>
+
+    <section class="panel root-cause-panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">ROOT CAUSE</p><h2>客诉成立根因拆解</h2><p>仅按审核通过记录中的正式原因分类路径统计，点击任一项可下钻稽查单。</p></div>
+        <span class="rule-badge">唯一稽查单口径</span>
+      </div>
+      <div class="root-grid">
+        <div><h3>正式三级原因</h3><div id="rootMechanisms" class="cause-list"></div></div>
+        <div><h3>人工客服责任细分</h3><div id="manualCauses" class="cause-list"></div></div>
+        <div><h3>客诉场景分布</h3><div id="complaintCategories" class="cause-list"></div></div>
+      </div>
+      <div id="qualityNotes" class="quality-notes"></div>
+    </section>
+
+    <section class="panel root-cause-panel not-upheld-cause-panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">NOT UPHELD ANALYSIS</p><h2>客诉不成立原因拆解</h2><p>仅统计审核通过且最终为客诉不成立的唯一稽查单，原因来自正式分类路径，不推断商家、客服或系统责任。</p></div>
+        <span class="rule-badge">分析师事实口径</span>
+      </div>
+      <div id="notUpheldFacts" class="analyst-facts"></div>
+      <div class="root-grid">
+        <div><h3>不成立原因类型</h3><div id="notUpheldBranches" class="cause-list"></div></div>
+        <div><h3>具体细分原因</h3><div id="notUpheldDetails" class="cause-list"></div></div>
+        <div><h3>客诉场景分布</h3><div id="notUpheldCategories" class="cause-list"></div></div>
+      </div>
+      <p class="panel-note">“核实结果无异常”“重复反馈”等均为源数据正式分类名称，不等同于对责任或投诉动机的推断。点击任一项可下钻对应稽查单。</p>
+    </section>
+
+    <section class="panel description-analysis-panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">DESCRIPTION EVIDENCE</p><h2>原因描述深层分析</h2><p>继续读取“原因描述”原文，区分明确核实结果、仅描述诉求或动作、仍含异常表述及无法归类内容。</p></div>
+        <span class="rule-badge">原文可回查</span>
+      </div>
+      <div id="descriptionFacts" class="analyst-facts"></div>
+      <div class="description-grid">
+        <div><h3>描述证据完整度</h3><div id="descriptionGroups" class="cause-list"></div></div>
+        <div><h3>原文事实主题</h3><div id="descriptionThemes" class="theme-list"></div></div>
+        <div><h3>高频原文表述</h3><div id="descriptionOriginals" class="cause-list original-list"></div></div>
+      </div>
+      <p id="descriptionMethod" class="panel-note"></p>
+    </section>
+
+    <section class="panel records-panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">SOURCE RECORDS</p><h2>稽查单明细</h2><p id="recordCount">正在加载…</p></div>
+        <div class="table-actions"><button id="clearDrilldown" class="ghost-button" type="button" hidden>退出下钻</button></div>
+      </div>
+      <div class="table-wrap"><table class="records-table"><thead><tr>
+        <th>稽查单 / 工单</th><th>店铺 / 品牌</th><th>完成处理时间</th><th>稽查结论</th><th>客诉结果</th><th>被投诉客服</th><th>责任分类</th><th>原因描述</th><th>更新时间</th><th>操作</th>
+      </tr></thead><tbody id="recordBody"></tbody></table></div>
+      <div class="pagination"><button id="prevPage">上一页</button><span id="pageLabel">第 1 / 1 页</span><button id="nextPage">下一页</button></div>
+    </section>
+  </main>
+
+  <dialog id="historyDialog" class="history-dialog">
+    <div class="dialog-head"><div><p class="eyebrow">CHANGE HISTORY</p><h2 id="historyTitle">变更历史</h2></div><button id="closeHistory" type="button" aria-label="关闭">×</button></div>
+    <div id="historyBody" class="history-body"></div>
+  </dialog>
+
+  <script src="{{ url_for('static', filename='complaint_audit.js') }}"></script>
+</body>
+</html>

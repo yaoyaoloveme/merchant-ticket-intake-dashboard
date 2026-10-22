@@ -10,6 +10,14 @@ let rootPages = 1;
 let rootSearchTimer = null;
 let selectedCategoryIndex = 0;
 let selectedKaCategory = '全部';
+let merchantRankingData = null;
+let merchantRankingRevision = null;
+let merchantRankingRequest = 0;
+let completionRecordsCache = null;
+let completionDayRequest = 0;
+let completionDateChanged = false;
+let completionPage = 1;
+let completionPages = 1;
 let lastAutoSyncFinishedAt = null;
 let followsLatestDate = true;
 const $ = (id) => document.getElementById(id);
@@ -18,6 +26,9 @@ let publicManifest = null;
 let publicSnapshot = null;
 let publicLoadedRevision = null;
 let publicRequest = 0;
+let publicVersionCheckRunning = false;
+let publicReloading = false;
+const publicPageOpenedAt = Date.now();
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -39,6 +50,35 @@ async function loadDashboard() {
   } catch (error) {
     $('statusLine').className = 'status-line error';
     $('statusLine').textContent = error.message;
+  }
+}
+
+async function loadMerchantRanking() {
+  const requestId = ++merchantRankingRequest;
+  const list = $('merchantRankingList');
+  try {
+    let data;
+    if (isPublicDashboard) {
+      if (!merchantRankingData || merchantRankingRevision !== publicLoadedRevision) {
+        data = await fetchPublicJson('data/merchant-ranking.json');
+      } else {
+        data = merchantRankingData;
+      }
+    } else {
+      const response = await fetch('/api/merchant-ranking');
+      const result = await response.json();
+      if (!result.ok) throw new Error(result.error || '读取商家排行失败');
+      data = result.data;
+    }
+    if (requestId !== merchantRankingRequest) return;
+    merchantRankingData = data;
+    merchantRankingRevision = publicLoadedRevision;
+    renderMerchantRanking(data);
+  } catch (error) {
+    if (requestId !== merchantRankingRequest) return;
+    $('merchantRankingCoverage').className = 'merchant-ranking-coverage uncertain';
+    $('merchantRankingCoverage').textContent = error.message;
+    if (!merchantRankingData) list.innerHTML = '<p class="empty">排行数据暂时无法读取</p>';
   }
 }
 
@@ -101,13 +141,14 @@ function renderRootCauses(data, evidenceSync) {
 
 function render(data, sync, realtime) {
   const s = data.summary;
+  $('sourceBreakdown').innerHTML = `<span>天润工单：<b>${Number(s.tianrun_count || 0).toLocaleString()}</b></span><span>商家APP发起：<b>${Number(s.merchant_app_count || 0).toLocaleString()}</b></span>`;
   $('totalMetric').textContent = s.total.toLocaleString();
   $('totalCompare').className = signClass(s.delta);
   $('totalCompare').textContent = `较前一日 ${signed(s.delta)}（${signed(s.pct)}%），近7日均值 ${s.avg7}`;
   const driver = s.top_driver;
   $('driverMetric').textContent = driver ? driver.category : '—';
   $('driverCompare').className = driver ? signClass(driver.delta) : '';
-  $('driverCompare').textContent = driver ? (s.delta > 0 ? `较前一日 ${signed(driver.delta)} 单，贡献总增量 ${driver.contribution}%` : `较前一日 ${signed(driver.delta)} 单；全量净变化 ${signed(s.delta)} 单`) : '暂无数据';
+  $('driverCompare').textContent = driver ? `较前一日 ${signed(driver.delta)} 单；天润净变化 ${signed(s.tianrun_delta || 0)} 单` : '暂无数据';
   $('anomalyMetric').textContent = s.record_anomaly_count;
   $('anomalyCompare').textContent = `${s.risk_ticket_count} 张敏感风险工单 · ${s.growth_anomaly_count} 个类型增长异常`;
   $('kaMetric').textContent = `${data.ka.ratio}%`;
@@ -119,16 +160,132 @@ function render(data, sync, realtime) {
   const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
   $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
   renderTrend(data.daily_trend);
+  completionRecordsCache = null;
+  completionPage = 1;
+  if (!completionDateChanged) $('completionDatePicker').value = data.selected_date;
+  loadCompletionDay();
+  renderMerchantApp(data.merchant_app);
+  loadMerchantRanking();
   renderCategoryInsights(data.category_insights);
-  renderAlerts(data.growth_anomalies, data.risk_summary, data.risk_records, data.operational_anomaly_summary);
+  renderAlerts(data.growth_anomalies, data.risk_summary, data.risk_records, data.operational_anomaly_summary, data.merchant_app?.risk_records || []);
   renderTopics(data.topics);
   renderKA(data.ka);
   renderAnomalyTable(data.anomaly_records);
 }
 
+function renderMerchantRanking(data) {
+  const coverage = data.coverage || {};
+  const complete = coverage.complete;
+  const rankRows = data.ranking || [];
+  const search = $('merchantRankingSearch').value.trim().toLowerCase();
+  const visibleRows = rankRows.filter(row => `${row.brand} ${row.shop_id}`.toLowerCase().includes(search));
+  const summary = $('merchantRankingSummary');
+  summary.innerHTML = `<div><span>纳入排行商家</span><strong>${Number(data.merchant_count || 0).toLocaleString()}</strong><small>${data.period_start} 至 ${data.period_end}</small></div>
+    <div><span>可归集天润</span><strong>${Number(data.tianrun_count || 0).toLocaleString()}</strong><small>按天润工单 ID 计数</small></div>
+    <div><span>可归集商家 APP</span><strong>${Number(data.merchant_app_count || 0).toLocaleString()}</strong><small>按 APP 稽查单 ID 计数</small></div>
+    <div><span>可归集合计</span><strong>${Number(data.total_count || 0).toLocaleString()}</strong><small>跨入口不去重</small></div>`;
+  const coverageText = complete
+    ? `已完成双来源逐日查询 90 / 90 天 · ${data.period_start} 至 ${data.period_end}，截止日持续更新；统计范围为源看板可查记录。`
+    : `数据覆盖不足：已确认双来源 ${coverage.fully_synced_days || 0} / 90 天，连续覆盖最近 ${coverage.contiguous_days_to_end || 0} 天；首个未确认日期 ${coverage.first_missing_date || '—'}。未同步日期的“0单”不作为已核实数据。`;
+  $('merchantRankingCoverage').className = `merchant-ranking-coverage ${complete ? 'complete' : 'uncertain'}`;
+  $('merchantRankingCoverage').textContent = coverageText;
+  $('merchantRankingDefinition').textContent = `${data.definition} 无店铺ID未匹配：天润 ${data.unmatched_tianrun_count || 0} 单，APP ${data.unmatched_merchant_app_count || 0} 单。当前显示前 ${rankRows.length} 名，搜索仅在本榜内。`;
+  const openShops = new Set([...$('merchantRankingList').querySelectorAll('details[open]')].map(row => row.dataset.shopId));
+  $('merchantRankingList').innerHTML = visibleRows.length ? visibleRows.map(row => `<details class="merchant-rank-row" data-shop-id="${escapeHtml(row.shop_id)}" ${openShops.has(String(row.shop_id)) ? 'open' : ''}>
+    <summary><span class="merchant-rank-number">${row.rank}</span><span class="merchant-rank-identity"><strong>${escapeHtml(row.brand || '未匹配品牌')}</strong><small>店铺 ID ${escapeHtml(row.shop_id)}${row.is_ka ? ' · KA' : ''}</small></span>
+    <strong class="merchant-rank-total">${row.total}</strong><span class="merchant-rank-tianrun">${row.tianrun_count}</span><span class="merchant-rank-app">${row.merchant_app_count}</span><span class="merchant-rank-week">${row.last_7_count}</span><span class="merchant-rank-date">${escapeHtml(row.last_ticket_at || '—')}</span><span class="merchant-rank-toggle" aria-hidden="true"></span></summary>
+    <div class="merchant-rank-tickets">${row.tickets.map(ticket => `<article class="merchant-rank-ticket"><div><a href="${escapeHtml(ticket.source_url)}" target="_blank" rel="noopener">${escapeHtml(ticket.source_label)} ${escapeHtml(ticket.ticket_id)}</a><span>${escapeHtml(ticket.category)}</span></div><p>${escapeHtml(ticket.description) || '未填写问题描述'}</p><small>${escapeHtml(ticket.created_at)} · ${escapeHtml(ticket.status)}</small></article>`).join('')}</div>
+  </details>`).join('') : '<p class="empty">没有匹配的商家；如果结果为空，请检查所选日期范围内数据是否已同步。</p>';
+}
+
+function renderCompletionRate(rate) {
+  if (!rate) return;
+  const rateLabel = rate.completed ? `${rate.rate_24h}%` : '暂无可核验样本';
+  const selectedLabel = rate.selected_date ? `${rate.selected_date} 创建` : '当前统计周期';
+  $('completionSummary').innerHTML = `<div class="completion-main"><span>${selectedLabel} · 24小时内完成率</span><strong>${rateLabel}</strong><small>完成数 ÷ 纳入分母；当前未完成也计入分母</small></div>
+    <div><span>24小时内完成 / 分母</span><strong>${Number(rate.within_24h || 0).toLocaleString()} / ${Number(rate.completed || 0).toLocaleString()}</strong><small>未完成和已超时均计入分母</small></div>
+    <div><span>当前未完成</span><strong>${Number(rate.not_completed_count || 0).toLocaleString()}</strong><small>其中已超过24小时 ${Number(rate.overdue_not_completed_count || 0).toLocaleString()} 单</small></div>
+    <div><span>仍待核验</span><strong>${Number(rate.pending_verification || 0).toLocaleString()}</strong><small>详情异常或时间冲突，不纳入分母</small></div>`;
+  $('completionCategories').innerHTML = (rate.categories || []).map(item => { const itemRate = item.completed ? `${item.rate_24h}%` : '暂无样本'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span>${itemRate}</span></div><div class="completion-category-grid"><span>完成 / 分母 <b>${item.within_24h} / ${item.completed}</b></span><span>未完成 <b>${item.not_completed_count}</b>（超24h ${item.overdue_not_completed_count}）</span><span>待核验 <b>${item.pending_verification}</b></span></div></article>`; }).join('');
+  const excluded = rate.excluded_breakdown || [];
+  $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">待核验：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>当日没有待核验工单</span>'}`;
+}
+
+function weekStartForIso(dayString) {
+  const day = new Date(`${dayString}T00:00:00`);
+  day.setDate(day.getDate() - ((day.getDay() + 6) % 7));
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+}
+
+async function loadCompletionDay() {
+  const requestId = ++completionDayRequest;
+  const selectedDate = $('completionDatePicker').value || dashboardData?.selected_date;
+  if (!selectedDate) return;
+  $('completionDatePicker').value = selectedDate;
+  $('completionDetailCount').textContent = '正在读取所选日期…';
+  $('completionRecordTable').innerHTML = '<tr><td colspan="6">正在读取逐单结果…</td></tr>';
+  try {
+    let payload;
+    if (isPublicDashboard) {
+      const weekStart = weekStartForIso(selectedDate);
+      const weekPath = `data/completion-week-${weekStart}.json`;
+      if (!completionRecordsCache || completionRecordsCache.revision !== publicLoadedRevision || completionRecordsCache.week !== weekStart) {
+        const week = await fetchPublicJson(weekPath);
+        completionRecordsCache = {revision: publicLoadedRevision, week: weekStart, days: week.days};
+      }
+      payload = completionRecordsCache.days.find(day => day.date === selectedDate);
+      if (!payload) throw new Error('该日期不在已发布的最近一周或周快照中');
+    } else {
+      const response = await fetch(`/api/completion-day?date=${encodeURIComponent(selectedDate)}`);
+      const result = await response.json();
+      if (!result.ok) throw new Error(result.error || '当日完成率读取失败');
+      payload = result.data;
+      completionRecordsCache = {revision: selectedDate, week: '', days: [payload]};
+    }
+    if (requestId !== completionDayRequest) return;
+    payload.stats.selected_date = selectedDate;
+    renderCompletionRate(payload.stats);
+    completionRecordsCache.rows = payload.records || [];
+    completionRecordsCache.date = selectedDate;
+    completionPage = 1;
+    renderCompletionRecords();
+  } catch (error) {
+    if (requestId !== completionDayRequest) return;
+    $('completionSummary').innerHTML = `<div class="completion-main"><span>${escapeHtml(selectedDate)} 创建</span><strong>暂不可用</strong><small>${escapeHtml(error.message)}</small></div>`;
+    $('completionCategories').innerHTML = '';
+    $('completionQuality').textContent = '';
+    $('completionRecordTable').innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`;
+    $('completionDetailCount').textContent = '当日数据不可用';
+  }
+}
+
+function renderCompletionRecords() {
+  const body = $('completionRecordTable');
+  if (!completionRecordsCache?.rows || completionRecordsCache.date !== $('completionDatePicker').value) {
+    body.innerHTML = '<tr><td colspan="6">正在读取逐单结果…</td></tr>';
+    return;
+  }
+  const category = $('completionCategoryFilter').value;
+  const outcome = $('completionResultFilter').value;
+  const rows = completionRecordsCache.rows.filter(row => (category === '全部' || row.category === category) && (outcome === '全部' || row.result === outcome));
+  $('completionDetailCount').textContent = `${rows.length.toLocaleString()} 单 · ${$('completionDatePicker').value} 创建`;
+  completionPages = Math.max(1, Math.ceil(rows.length / 50));
+  completionPage = Math.min(completionPage, completionPages);
+  $('completionPageLabel').textContent = `${completionPage} / ${completionPages} 页，每页50单`;
+  $('completionPrev').disabled = completionPage <= 1;
+  $('completionNext').disabled = completionPage >= completionPages;
+  const shown = rows.slice((completionPage - 1) * 50, completionPage * 50);
+  body.innerHTML = shown.length ? shown.map(row => {
+    const seconds = row.elapsed_seconds;
+    const duration = seconds == null ? '—' : `${Math.floor(seconds / 3600)}小时${Math.floor(seconds % 3600 / 60)}分${seconds % 60}秒`;
+    const resultClass = row.result === '超时' || row.result === '超时未完成' ? 'late' : row.result === '待核验' ? 'pending' : row.result === '未完成' ? 'incomplete' : '';
+    return `<tr><td><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a></td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.created_at)}</td><td>${escapeHtml(row.first_inspect_completed_at || '—')}</td><td>${duration}</td><td><strong class="completion-result ${resultClass}">${escapeHtml(row.result)}</strong>${row.reason ? `<small>${escapeHtml(row.reason)}</small>` : ''}</td></tr>`;
+  }).join('') : '<tr><td colspan="6">所选日期没有符合筛选条件的工单</td></tr>';
+}
+
 function renderTrend(days) {
   const categories = Object.keys(colors);
-  $('trendLegend').innerHTML = categories.map(c => `<span><i style="background:${colors[c]}"></i>${c}</span>`).join('');
+  $('trendLegend').innerHTML = `${categories.map(c => `<span><i style="background:${colors[c]}"></i>${c}</span>`).join('')}<span><i class="app-legend-swatch"></i>商家APP发起</span>`;
   const max = Math.max(1, ...days.map(d => d.total));
   $('trendChart').style.setProperty('--bars', days.length);
   $('trendChart').style.minWidth = `${Math.max(640, days.length * 58)}px`;
@@ -136,9 +293,49 @@ function renderTrend(days) {
     const segments = categories.map(cat => {
       const height = day.total ? day.categories[cat] / day.total * 100 : 0;
       return `<span class="bar-seg" style="--seg-height:${height}%;background:${colors[cat]}" title="${cat} ${day.categories[cat]}单"></span>`;
-    }).join('');
-    return `<div class="day-bar"><span class="bar-value">${day.total}</span><div class="bar-stack" style="--height:${day.total / max * 215}px" title="${day.date}：${day.total}单">${segments}</div><span class="day-label">${day.label}</span></div>`;
+    }).join('') + `<span class="bar-seg app-bar-seg" style="--seg-height:${day.total ? day.merchant_app_count / day.total * 100 : 0}%" title="商家APP发起 ${day.merchant_app_count}单"></span>`;
+    const sourceTitle = `天润 ${day.tianrun_count} 单 · 商家APP ${day.merchant_app_count} 单`;
+    return `<div class="day-bar"><span class="bar-value">${day.total}</span><div class="bar-stack" style="--height:${day.total / max * 215}px" title="${day.date}：${day.total}单（${sourceTitle}）">${segments}</div><span class="day-label">${day.label}</span></div>`;
   }).join('');
+}
+
+function renderMerchantApp(app) {
+  app = app || {};
+  const syncedAt = app.day_synced_at ? app.day_synced_at.replace('T', ' ') : '未同步';
+  const queueAt = app.open_synced_at ? app.open_synced_at.replace('T', ' ') : '';
+  const queueTimestamp = app.open_synced_at ? Date.parse(/[Zz]|[+-]\d\d:\d\d$/.test(app.open_synced_at) ? app.open_synced_at : `${app.open_synced_at}+08:00`) : NaN;
+  const queueStale = !Number.isFinite(queueTimestamp) || Date.now() - queueTimestamp > 15 * 60 * 1000;
+  const queueStatus = !app.open_synced_at ? '未成功读取当前未完成队列' : queueStale ? `队列数据可能过旧，最近同步 ${queueAt}` : `当前队列已核对 · ${queueAt}`;
+  $('merchantAppSummary').innerHTML = `<div class="merchant-app-kpis">
+    <div><span>所选日期新增</span><strong>${Number(app.count || 0).toLocaleString()}</strong><small>前日 ${Number(app.previous || 0).toLocaleString()} · <b class="${signClass(app.delta || 0)}">${signed(app.delta || 0)}</b></small></div>
+    <div><span>当前未完成</span><strong>${Number(app.current_pending_count || 0).toLocaleString()}</strong><small>不受所选分析日期限制</small></div>
+    <div class="${app.overdue_24h_count ? 'is-overdue' : ''}"><span>超24小时仍未稽查</span><strong>${Number(app.overdue_24h_count || 0).toLocaleString()}</strong><small>只统计当前未完成且状态未稽查</small></div>
+    <div><span>所选日期数据同步</span><strong class="sync-time">${escapeHtml(syncedAt)}</strong><small>${app.loaded ? 'APP新增明细已读取' : '该日期尚未确认完成同步'}</small></div>
+  </div>
+  <div class="merchant-sync-note ${queueStale ? 'stale' : 'fresh'}"><b>${queueStale ? '需核实队列时效' : '未完成队列同步正常'}</b><span>${escapeHtml(queueStatus)}</span><small>新增量按入口计数，同一事项若同时进入天润与APP会分别计数；超时从APP创建时间起算。</small></div>`;
+
+  const overdue = app.overdue_24h_records || [];
+  $('merchantOverdueCount').textContent = app.open_synced_at && !queueStale ? `${overdue.length} 单` : '待确认';
+  $('merchantOverdueList').innerHTML = overdue.length ? overdue.map(row => `<article class="merchant-overdue-ticket">
+    <div class="merchant-overdue-ticket-head"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">稽查单 ${escapeHtml(row.inspection_id)}</a><span>事件 ${escapeHtml(row.event_id)} · 店铺 ${escapeHtml(row.shop_id)}</span></div><strong>${escapeHtml(row.age_hours ?? '—')} 小时</strong></div>
+    <p>${escapeHtml(row.description)}</p><div class="merchant-ticket-meta"><span>${escapeHtml(row.brand)}</span><span>${escapeHtml(row.inspect_status)}</span><span>创建 ${escapeHtml(row.created_at)}</span>${row.risk_hits?.map(hit => `<b class="risk-tag">${escapeHtml(hit.label)}</b>`).join('') || ''}</div>
+  </article>`).join('') : app.open_synced_at && !queueStale
+    ? '<div class="merchant-overdue-empty"><strong>0 单</strong><span>本次已同步的当前未完成队列中，没有创建满24小时且仍未稽查的商家APP稽查单。</span></div>'
+    : '<div class="merchant-overdue-empty uncertain"><strong>暂不能确认</strong><span>当前未完成队列同步缺失或已超过15分钟，不能据此判断超24小时工单为0。</span></div>';
+
+  $('merchantPendingList').innerHTML = (app.pending_records || []).length ? app.pending_records.map(row => `<article class="merchant-pending-ticket"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">稽查单 ${escapeHtml(row.inspection_id)}</a><strong class="${row.overdue_24h ? 'overdue-label' : ''}">${escapeHtml(row.age_hours ?? '—')} 小时 · ${escapeHtml(row.inspect_status)}</strong></div><p>${escapeHtml(row.description)}</p><small>店铺 ${escapeHtml(row.shop_id)} · ${escapeHtml(row.brand)} · 创建 ${escapeHtml(row.created_at)}</small></article>`).join('') : '<p class="empty">本次队列没有未完成单据；请结合上方同步状态核实。</p>';
+  const records = app.records || [];
+  $('merchantRecordHint').textContent = `${records.length} 单 · 未完成优先，同状态按创建时间排列`;
+  $('merchantTypeBreakdown').innerHTML = (app.type_breakdown || []).map(item => `<span>${escapeHtml(item.name)} <b>${item.count}</b><small>前日${item.previous} · ${signed(item.delta)}</small></span>`).join('') || '<span>暂无结果类型数据</span>';
+  $('merchantRecordTable').innerHTML = records.length ? records.map(row => `<tr>
+    <td><a class="merchant-id" href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.inspection_id)}</a><small>事件 ${escapeHtml(row.event_id)}<br>店铺 ${escapeHtml(row.shop_id)}</small></td>
+    <td>${escapeHtml(row.brand)}${row.is_ka ? '<small class="ka-mark">KA</small>' : ''}</td>
+    <td class="merchant-description">${escapeHtml(row.description)}${row.risk_hits?.length ? `<div class="merchant-risk-tags">${row.risk_hits.map(hit => `<b>${escapeHtml(hit.label)}</b>`).join('')}</div>` : ''}</td>
+    <td><span class="merchant-state ${row.is_open ? 'pending' : ''}">${escapeHtml(row.inspect_status)}</span></td>
+    <td>${escapeHtml(row.abnormal_state)}<small>${escapeHtml(row.abnormal_type)}</small></td>
+    <td>${escapeHtml(row.created_at)}<small>${row.completed_at ? `完成 ${escapeHtml(row.completed_at)}` : '尚未完成'}</small></td>
+    <td>${row.is_open ? `${escapeHtml(row.age_hours ?? '—')} 小时` : '—'}${row.overdue_24h ? '<small class="overdue-label">已超24小时</small>' : ''}</td>
+  </tr>`).join('') : '<tr><td colspan="7" class="empty">所选日期暂无商家APP发起的稽查单。</td></tr>';
 }
 
 function renderCategoryInsights(rows) {
@@ -171,28 +368,42 @@ function renderCategoryDetail(row) {
   </article>`).join('') : '<div class="empty">该类别暂无敏感风险或处理异常工单</div>';
 }
 
-function renderAlerts(growth, riskSummary, riskRecords, operationalSummary) {
+function renderAlerts(growth, riskSummary, riskRecords, operationalSummary, appRiskRecords = []) {
+  const combinedRiskRecords = [...riskRecords, ...appRiskRecords.map(row => ({
+    ...row, ticket_id: row.inspection_id, status: row.inspect_status, handler: '商家APP', source_label: '商家APP'
+  }))].sort((a, b) => ({'紧急': 0, '高': 1, '关注': 2}[a.risk_level] ?? 3) - ({'紧急': 0, '高': 1, '关注': 2}[b.risk_level] ?? 3));
   $('growthAlerts').innerHTML = growth.length ? growth.map(a => `<div class="alert"><strong>${escapeHtml(a.category)}：${a.current} 单</strong><small>近7日均值 ${a.avg7}，高出 ${a.delta_vs_avg} 单</small></div>`).join('') : '<div class="empty">当日各类型均未明显偏离近7日常态</div>';
-  $('riskCount').textContent = `${riskRecords.length} 单`;
-  $('riskSummary').innerHTML = riskSummary.length ? riskSummary.map(a => `<span>${escapeHtml(a.risk)} <b>${a.count}</b></span>`).join('') : '<span class="muted">暂无敏感风险词命中</span>';
-  $('riskTicketList').innerHTML = riskRecords.length ? riskRecords.map(r => `<article class="risk-ticket ${r.risk_level==='紧急'?'critical':''}">
-    <div class="risk-ticket-head"><div><a href="${escapeHtml(r.source_url)}" target="_blank" rel="noopener">工单 ${escapeHtml(r.ticket_id)}</a><span>${escapeHtml(r.shop_id)} · ${escapeHtml(r.brand)}</span></div><span class="risk-level">${escapeHtml(r.risk_level)}</span></div>
+  const appRiskSummary = appRiskRecords.length ? `<span>商家APP风险工单 <b>${appRiskRecords.length}</b></span>` : '';
+  $('riskCount').textContent = `${combinedRiskRecords.length} 单`;
+  $('riskSummary').innerHTML = `${riskSummary.length ? riskSummary.map(a => `<span>${escapeHtml(a.risk)} <b>${a.count}</b></span>`).join('') : appRiskRecords.length ? '<span>风险线索来自商家APP</span>' : '<span class="muted">暂无敏感风险词命中</span>'}${appRiskSummary}`;
+  $('riskTicketList').innerHTML = combinedRiskRecords.length ? combinedRiskRecords.map(r => `<article class="risk-ticket ${r.risk_level==='紧急'?'critical':''}">
+    <div class="risk-ticket-head"><div><a href="${escapeHtml(r.source_url)}" target="_blank" rel="noopener">${r.source_label ? '稽查单' : '工单'} ${escapeHtml(r.ticket_id)}</a><span>${r.source_label ? '商家APP · ' : ''}${escapeHtml(r.shop_id)} · ${escapeHtml(r.brand)}</span></div><span class="risk-level">${escapeHtml(r.risk_level)}</span></div>
     <div class="risk-hit-list">${r.risk_hits.map(hit => `<span><b>${escapeHtml(hit.label)}</b> · 命中“${escapeHtml(hit.matched_text)}” · ${escapeHtml(hit.source)}</span>`).join('')}</div>
-    <p>${escapeHtml(r.description)}</p><small>${escapeHtml(r.created_at.slice(11,16))} · ${escapeHtml(r.status)} · ${escapeHtml(r.handler)}</small>
+    <p>${escapeHtml(r.description)}</p><small>${escapeHtml((r.created_at || '').slice(11,16))} · ${escapeHtml(r.status)} · ${escapeHtml(r.handler)}</small>
   </article>`).join('') : '<div class="empty risk-empty">当日未识别到明确的暴力、舆情、未成年人、公共卫生或人身安全风险工单</div>';
   $('anomalySummary').innerHTML = operationalSummary.length ? operationalSummary.slice(0,8).map(a => `<div class="anomaly-chip"><span>${escapeHtml(a.reason)}</span><b>${a.count}</b></div>`).join('') : '<div class="empty">暂无处理或数据质量异常</div>';
 }
 
 async function pollRealtimeStatus() {
   if (isPublicDashboard) {
+    if (!publicLoadedRevision || publicVersionCheckRunning || publicReloading) return;
+    publicVersionCheckRunning = true;
     try {
       const manifest = await fetchPublicJson('data/index.json');
+      if (manifest.revision !== publicLoadedRevision) {
+        publicReloading = true;
+        const target = new URL(window.location.href);
+        target.searchParams.set('refresh', Date.now().toString());
+        window.location.replace(target.toString());
+        return;
+      }
       publicManifest = manifest;
-      if (manifest.revision !== publicLoadedRevision) await loadPublicDashboard(manifest);
-      else updatePublicStatus();
+      updatePublicStatus();
     } catch (error) {
       $('statusLine').className = 'status-line error';
       $('statusLine').textContent = `自动刷新失败，保留上次数据：${error.message}`;
+    } finally {
+      publicVersionCheckRunning = false;
     }
     return;
   }
@@ -319,8 +530,15 @@ async function syncEvidence() {
   }
 }
 
+
 $('datePicker').addEventListener('change', () => { followsLatestDate = false; loadDashboard(); });
 $('windowPicker').addEventListener('change', loadDashboard);
+$('completionDatePicker').addEventListener('change', () => { completionDateChanged = true; completionPage = 1; loadCompletionDay(); });
+['completionCategoryFilter', 'completionResultFilter'].forEach(id => $(id).addEventListener('change', () => { completionPage = 1; renderCompletionRecords(); }));
+$('completionPrev').addEventListener('click', () => { if (completionPage > 1) { completionPage--; renderCompletionRecords(); } });
+$('completionNext').addEventListener('click', () => { if (completionPage < completionPages) { completionPage++; renderCompletionRecords(); } });
+document.querySelector('.completion-details').addEventListener('toggle', event => { if (event.currentTarget.open) renderCompletionRecords(); });
+$('merchantRankingSearch').addEventListener('input', () => { if (merchantRankingData) renderMerchantRanking(merchantRankingData); });
 $('syncBtn').addEventListener('click', syncData);
 $('evidenceBtn').addEventListener('click', syncEvidence);
 ['rootLayer','rootStatus','rootKa','rootUnresolved'].forEach(id => $(id).addEventListener('change', () => { rootPage=1; loadRootCauses(); }));
@@ -357,6 +575,9 @@ async function loadPublicDashboard(manifest) {
     publicManifest = manifest;
     publicSnapshot = snapshot;
     publicLoadedRevision = manifest.revision;
+    const completionWeeks = manifest.completion_weeks || [];
+    if (completionWeeks.length) $('completionDatePicker').min = completionWeeks[0];
+    $('completionDatePicker').max = manifest.latest_date;
     $('datePicker').min = manifest.dates[manifest.dates.length - 1];
     $('datePicker').max = manifest.latest_date;
     $('datePicker').value = selected;
@@ -401,4 +622,23 @@ if (isPublicDashboard) {
   $('evidenceBtn').hidden = true;
 }
 loadDashboard();
-window.setInterval(pollRealtimeStatus, 30000);
+if (isPublicDashboard) {
+  const schedulePublicVersionCheck = () => {
+    const elapsed = Date.now() - publicPageOpenedAt;
+    const delay = elapsed < 10 * 60 * 1000 ? 10 * 1000 : 60 * 1000;
+    window.setTimeout(async () => {
+      await pollRealtimeStatus();
+      schedulePublicVersionCheck();
+    }, delay);
+  };
+  const checkAfterResume = () => { void pollRealtimeStatus(); };
+  window.addEventListener('focus', checkAfterResume);
+  window.addEventListener('pageshow', checkAfterResume);
+  window.addEventListener('online', checkAfterResume);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkAfterResume();
+  });
+  schedulePublicVersionCheck();
+} else {
+  window.setInterval(pollRealtimeStatus, 30000);
+}

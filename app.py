@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import statistics
 import threading
@@ -22,26 +23,52 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_file
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from complaint_audit import register_complaint_audit, start_auto_sync as start_complaint_audit_sync
 
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "tickets.db"
+TIANRUN_COOKIE_PATH = DATA_DIR / "tianrun_cookie.txt"
 DEFAULT_SOURCE = "http://172.25.11.31:8080/ticket-dashboard/"
 SOURCE_BASE = os.environ.get("TICKET_DASHBOARD_URL", DEFAULT_SOURCE).rstrip("/") + "/"
+TIANRUN_BASE = "https://ticket-sh.clink.cn"
+TIANRUN_ASSIGN_ENABLED = os.environ.get("TIANRUN_ASSIGN_ENABLED", "").lower() in {"1", "true", "yes"}
+EMPLOYEE_DASHBOARD_HTML = Path(
+    os.environ.get("EMPLOYEE_DASHBOARD_OUTPUT", ROOT.parent / "员工工单卡点看板.html")
+)
+EMPLOYEE_DASHBOARD_DATA = Path(
+    os.environ.get("EMPLOYEE_DASHBOARD_DATA_OUTPUT", ROOT.parent / "员工工单卡点看板数据.json")
+)
+EMPLOYEE_DASHBOARD_SERVICE = os.environ.get(
+    "EMPLOYEE_DASHBOARD_SERVICE", "http://127.0.0.1:8765"
+).rstrip("/")
+REPORT_ARCHIVE_ROOT = Path(
+    os.environ.get("DASHBOARD_DAILY_REPORT_ROOT", ROOT.parent / "outputs/dashboard-daily-analysis")
+)
+REPORT_SLOTS = {"1800": "18:00版", "2359": "23:59版"}
+REPORT_DOWNLOAD_FILES = {"analysis.md", "analysis-data.json", "run-metadata.json"}
 
 app = Flask(__name__)
+register_complaint_audit(app)
 SYNC_LOCK = threading.Lock()
 SYNC_STATE: dict[str, Any] = {"running": False, "message": "尚未同步", "finished_at": None}
 EVIDENCE_LOCK = threading.Lock()
 EVIDENCE_STATE: dict[str, Any] = {"running": False, "message": "尚未补齐稽查证据", "finished_at": None}
+TIANRUN_LOCK = threading.Lock()
+TIANRUN_PREVIEWS: dict[str, dict[str, Any]] = {}
+TIANRUN_USER_CACHE: dict[str, dict[str, Any]] = {}
 AUTO_SYNC_INTERVAL_SECONDS = 5 * 60
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+MERCHANT_PENDING_STATUSES = {"未稽查", "稽查中", "待稽查"}
 AUTO_SYNC_STATE: dict[str, Any] = {
     "enabled": True,
     "interval_seconds": AUTO_SYNC_INTERVAL_SECONDS,
@@ -54,6 +81,12 @@ AUTO_SYNC_STATE: dict[str, Any] = {
 
 CATEGORY_ORDER = ["多付/漏付", "介入问题", "批量核实", "回访工单", "其他"]
 CORE_CATEGORY_ORDER = ["多付/漏付", "批量核实", "回访工单", "介入问题"]
+GUARD_QUEUE_HANDLER = "值守客服问题处理组"
+PENDING_ASSIGN_STATUSES = {"待领取", "待接单"}
+TEAM_MEMBERS = [
+    "楚家浩", "曹彩月", "曹静宇", "陈小如", "龚臣", "谷玉", "黄琳莉01", "黄晓01",
+    "黄雨晴", "李东颖", "刘可婷", "马婧瑶", "谭森林", "张琳01", "周丽君", "周雪鑫",
+]
 TOPIC_RULES = [
     ("少付/漏付", r"少付|漏付|未付款|没有付款|未支付|少扫|漏扫"),
     ("偷盗/疑似拿取", r"偷盗|偷拿|盗窃|拿走|顺走|疑似.{0,8}(拿|取)|未结账"),
@@ -212,6 +245,31 @@ def get_db() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_tickets_created_date ON tickets(created_date);
         CREATE INDEX IF NOT EXISTS idx_tickets_category ON tickets(category);
         CREATE INDEX IF NOT EXISTS idx_tickets_brand ON tickets(brand);
+        CREATE TABLE IF NOT EXISTS merchant_inspections (
+          event_id TEXT PRIMARY KEY,
+          inspection_id TEXT,
+          shop_id TEXT,
+          brand TEXT,
+          description TEXT,
+          inspect_status TEXT,
+          abnormal_state TEXT,
+          abnormal_type TEXT,
+          created_at TEXT,
+          created_date TEXT,
+          completed_at TEXT,
+          duration_text TEXT,
+          duration_minutes INTEGER,
+          pipeline_text TEXT,
+          is_ka INTEGER NOT NULL DEFAULT 0,
+          is_open INTEGER NOT NULL DEFAULT 0,
+          fetched_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_merchant_created_date ON merchant_inspections(created_date);
+        CREATE INDEX IF NOT EXISTS idx_merchant_open ON merchant_inspections(is_open, inspect_status);
+        CREATE TABLE IF NOT EXISTS merchant_sync_state (
+          state_key TEXT PRIMARY KEY,
+          state_value TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS sync_runs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           started_at TEXT NOT NULL,
@@ -219,6 +277,7 @@ def get_db() -> sqlite3.Connection:
           date_from TEXT,
           date_to TEXT,
           ticket_count INTEGER DEFAULT 0,
+          merchant_count INTEGER DEFAULT 0,
           status TEXT NOT NULL,
           message TEXT
         );
@@ -233,21 +292,347 @@ def get_db() -> sqlite3.Connection:
           detail_status TEXT NOT NULL,
           fetched_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS assignment_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ticket_id TEXT NOT NULL,
+          old_handler TEXT,
+          target_name TEXT NOT NULL,
+          target_cno TEXT,
+          target_handler_id TEXT NOT NULL,
+          content TEXT,
+          requested_at TEXT NOT NULL,
+          state TEXT NOT NULL,
+          response_status INTEGER,
+          message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_assignment_audit_ticket ON assignment_audit(ticket_id, requested_at);
         """
     )
+    sync_columns = {row[1] for row in conn.execute("PRAGMA table_info(sync_runs)")}
+    if "merchant_count" not in sync_columns:
+        conn.execute("ALTER TABLE sync_runs ADD COLUMN merchant_count INTEGER DEFAULT 0")
     return conn
 
 
 def latest_ticket_date() -> str:
     """首页默认展示本地已有数据的最新日期，避免跨日后尚未同步时打开即空白。"""
     conn = get_db()
-    row = conn.execute("SELECT MAX(created_date) AS latest_date FROM tickets").fetchone()
+    row = conn.execute(
+        "SELECT MAX(created_date) AS latest_date FROM ("
+        "SELECT created_date FROM tickets UNION ALL SELECT created_date FROM merchant_inspections)"
+    ).fetchone()
     conn.close()
     return row["latest_date"] if row and row["latest_date"] else date.today().isoformat()
 
 
 def clean(text: str | None) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def local_admin_only() -> tuple[Any, int] | None:
+    """The write console is deliberately unavailable to remote clients."""
+    if request.remote_addr not in {"127.0.0.1", "::1"}:
+        return jsonify({"ok": False, "error": "天润管理功能仅允许在看板所在电脑本机使用"}), 403
+    origin = request.headers.get("Origin", "")
+    allowed_origins = {f"http://{request.host}", f"https://{request.host}"}
+    if request.method != "GET" and origin and origin not in allowed_origins:
+        return jsonify({"ok": False, "error": "拒绝来自其他网页的管理请求"}), 403
+    return None
+
+
+def read_tianrun_cookie() -> str:
+    if not TIANRUN_COOKIE_PATH.exists():
+        return ""
+    return TIANRUN_COOKIE_PATH.read_text(encoding="utf-8").strip()
+
+
+def cookie_summary() -> dict[str, Any]:
+    cookie = read_tianrun_cookie()
+    names = []
+    for part in cookie.split(";"):
+        name = part.strip().partition("=")[0].strip()
+        if name:
+            names.append(name)
+    stat = TIANRUN_COOKIE_PATH.stat() if cookie and TIANRUN_COOKIE_PATH.exists() else None
+    return {
+        "configured": bool(cookie),
+        "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds") if stat else None,
+        "cookie_names": names,
+        "has_tsession": "TSESSIONID" in names,
+        "assign_enabled": TIANRUN_ASSIGN_ENABLED,
+    }
+
+
+def save_tianrun_cookie(value: str) -> None:
+    cookie = value.strip()
+    if not cookie or "TSESSIONID=" not in cookie:
+        raise ValueError("Cookie 中没有找到 TSESSIONID")
+    if "\n" in cookie or "\r" in cookie or len(cookie) > 20000:
+        raise ValueError("Cookie 格式异常")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = TIANRUN_COOKIE_PATH.with_suffix(".tmp")
+    temporary.write_text(cookie, encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(TIANRUN_COOKIE_PATH)
+    os.chmod(TIANRUN_COOKIE_PATH, 0o600)
+
+
+def tianrun_session() -> requests.Session:
+    cookie = read_tianrun_cookie()
+    if not cookie:
+        raise RuntimeError("尚未配置天润 Cookie")
+    session = requests.Session()
+    # Tianrun is directly reachable; bypass a flaky desktop proxy that can
+    # intermittently close authenticated POST requests.
+    session.trust_env = False
+    session.headers.update(
+        {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Cookie": cookie,
+            "Origin": TIANRUN_BASE,
+            "Referer": TIANRUN_BASE + "/",
+            "User-Agent": "Mozilla/5.0 ticket-dashboard-local-admin",
+        }
+    )
+    return session
+
+
+class TianrunUncertainError(RuntimeError):
+    """A write may have reached Tianrun; never automatically resubmit it."""
+
+
+def tianrun_json(method: str, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    writing = method.upper() == "PUT"
+    try:
+        response = tianrun_session().request(
+            method, TIANRUN_BASE + path, json=payload, timeout=(8, 25), allow_redirects=False
+        )
+    except requests.RequestException as exc:
+        if writing:
+            raise TianrunUncertainError("提交连接中断，结果待确认；请核验台账，勿重复提交") from exc
+        raise RuntimeError(f"无法连接天润：{exc}") from exc
+    if response.status_code in {301, 302, 303, 307, 308, 401, 403}:
+        raise PermissionError("天润登录已失效，请重新登录后更新 Cookie")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        if writing:
+            raise TianrunUncertainError("提交返回内容异常，结果待确认；请核验台账") from exc
+        raise RuntimeError(f"天润返回了非 JSON 内容（HTTP {response.status_code}）") from exc
+    if writing and (response.status_code >= 500 or not isinstance(data, dict)):
+        raise TianrunUncertainError("天润提交返回异常，结果待确认；请核验台账")
+    if response.status_code >= 400:
+        message = clean(str(data.get("message") or data.get("msg") or "请求失败"))
+        raise RuntimeError(f"天润请求失败（HTTP {response.status_code}）：{message}")
+    business_status = data.get("status")
+    if writing and isinstance(business_status, int) and business_status >= 500:
+        raise TianrunUncertainError("天润处理异常，提交结果待确认；请核验台账")
+    if business_status in {401, 403}:
+        raise PermissionError("天润登录已失效或当前账号无权限，请重新登录后更新 Cookie")
+    if isinstance(business_status, int) and business_status >= 400:
+        message = clean(str(data.get("message") or data.get("msg") or "请求失败"))
+        raise RuntimeError(f"天润请求失败（状态 {business_status}）：{message}")
+    if writing and data.get("status") != 200 and "已是该处理人" not in str(data.get("message", "")):
+        raise TianrunUncertainError("未收到明确受理状态，结果待确认；请核验台账")
+    return response.status_code, data
+
+
+def tianrun_users(search_name: str) -> list[dict[str, str]]:
+    _, data = tianrun_json(
+        "POST",
+        "/api/user/page?noRepeat=true",
+        {"limit": 30, "offset": 0, "searchName": search_name, "usePermission": 1, "isDisplaySchedule": 1},
+    )
+    rows = data.get("result", {}).get("data", [])
+    if not isinstance(rows, list):
+        raise RuntimeError("天润员工查询返回结构与预期不一致")
+    return [
+        {
+            "handler_id": str(row.get("id") or ""),
+            "name": clean(str(row.get("name") or "")),
+            "cno": clean(str(row.get("cno") or row.get("employeeId") or "")),
+        }
+        for row in rows
+        if row.get("id") and row.get("name")
+    ]
+
+
+def exact_tianrun_user(search_name: str) -> dict[str, str]:
+    query = clean(search_name)
+    cached = TIANRUN_USER_CACHE.get(query)
+    if cached and cached["expires_at"] > time.time():
+        return dict(cached["user"])
+    users = tianrun_users(query)
+    exact = [row for row in users if row["name"] == query or row["cno"] == query]
+    if len(exact) != 1:
+        if not exact:
+            raise ValueError("没有找到姓名或工号完全匹配的唯一员工")
+        raise ValueError("匹配到多名员工，请改用唯一工号")
+    user = exact[0]
+    TIANRUN_USER_CACHE[query] = {"user": dict(user), "expires_at": time.time() + 8 * 60 * 60}
+    if user["name"]:
+        TIANRUN_USER_CACHE[user["name"]] = {"user": dict(user), "expires_at": time.time() + 8 * 60 * 60}
+    if user["cno"]:
+        TIANRUN_USER_CACHE[user["cno"]] = {"user": dict(user), "expires_at": time.time() + 8 * 60 * 60}
+    return user
+
+
+def assignment_ticket(ticket_id: str) -> dict[str, Any]:
+    conn = get_db()
+    row = conn.execute(
+        "SELECT ticket_id, shop_id, brand, category, description, status, handler, created_at "
+        "FROM tickets WHERE ticket_id=?",
+        (ticket_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise ValueError("本地看板中未找到该工单，请先同步最新数据")
+    return dict(row)
+
+
+def save_assignment_audit(
+    ticket: dict[str, Any], user: dict[str, str], reason: str, state: str,
+    status: int | None, message: str,
+) -> int:
+    conn = get_db()
+    cursor = conn.execute(
+        "INSERT INTO assignment_audit (ticket_id,old_handler,target_name,target_cno,target_handler_id,content,requested_at,state,response_status,message) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            ticket["ticket_id"], ticket.get("handler", ""), user.get("name", ""), user.get("cno", ""),
+            user.get("handler_id", ""), reason, datetime.now().isoformat(timespec="seconds"),
+            state, status, message,
+        ),
+    )
+    conn.commit()
+    audit_id = cursor.lastrowid
+    conn.close()
+    return audit_id
+
+
+def team_assignment_statistics(statistics_date: str | None = None) -> list[dict[str, Any]]:
+    """Summarise the latest non-failed dashboard submission for each ticket today."""
+    report_date = statistics_date or date.today().isoformat()
+    summary = {
+        name: {
+            "name": name,
+            "assigned_today": 0,
+            "verified_today": 0,
+            "pending_today": 0,
+            "category_counts": {category: 0 for category in CORE_CATEGORY_ORDER},
+            "statistics_date": report_date,
+        }
+        for name in TEAM_MEMBERS
+    }
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT audit.ticket_id, audit.target_name, audit.state, COALESCE(tickets.category, '其他') AS category
+        FROM assignment_audit AS audit
+        LEFT JOIN tickets ON tickets.ticket_id = audit.ticket_id
+        WHERE substr(audit.requested_at, 1, 10) = ?
+          AND audit.state IN ('已提交待核验','幂等完成','已核验')
+          AND audit.id = (
+            SELECT latest.id
+            FROM assignment_audit AS latest
+            WHERE latest.ticket_id = audit.ticket_id
+              AND substr(latest.requested_at, 1, 10) = ?
+              AND latest.state IN ('已提交待核验','幂等完成','已核验')
+            ORDER BY latest.requested_at DESC, latest.id DESC
+            LIMIT 1
+          )
+        """,
+        (report_date, report_date),
+    ).fetchall()
+    conn.close()
+    for row in rows:
+        member = summary.get(row["target_name"])
+        if not member:
+            continue
+        member["assigned_today"] += 1
+        member["verified_today" if row["state"] in {"已核验", "幂等完成"} else "pending_today"] += 1
+        if row["category"] in member["category_counts"]:
+            member["category_counts"][row["category"]] += 1
+    return [summary[name] for name in TEAM_MEMBERS]
+
+
+ASSIGNMENT_UNRESOLVED = ("正在提交", "已提交待核验", "提交结果待确认")
+
+
+def unresolved_assignments() -> dict[str, dict[str, Any]]:
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT a.* FROM assignment_audit a WHERE a.id=(SELECT MAX(b.id) FROM assignment_audit b "
+        "WHERE b.ticket_id=a.ticket_id AND b.state NOT IN ('失败','未提交')) AND a.state IN (?,?,?)", ASSIGNMENT_UNRESOLVED,
+    ).fetchall()
+    conn.close()
+    return {row["ticket_id"]: dict(row) for row in rows}
+
+
+def enrich_dispatch_ticket(row: dict[str, Any], unresolved: dict | None = None) -> dict[str, Any]:
+    item = dict(row)
+    item["risk_hits"] = detect_risk_hits(item.get("description") or "")
+    item["risk_level"] = min((hit["level"] for hit in item["risk_hits"]), key=lambda level: RISK_LEVEL_ORDER[level], default="")
+    item["demand"] = classify_merchant_demand(item.get("category", "其他"), item.get("description") or "")
+    item["is_ka"] = bool(item.get("is_ka") or item.get("brand"))
+    prior = (unresolved or {}).get(item["ticket_id"])
+    item["assignment_blocked"] = prior["state"] if prior else ""
+    return item
+
+
+def recommend_assignments(tickets: list[dict], users: list[dict], overrides: dict, risk_recipient: str) -> list[dict]:
+    stats = {row["name"]: row for row in team_assignment_statistics()}
+    totals = {user["name"]: stats[user["name"]]["assigned_today"] for user in users}
+    categories = {user["name"]: Counter(stats[user["name"]]["category_counts"]) for user in users}
+    by_name = {user["name"]: user for user in users}
+    assignments = []
+    for ticket in tickets:
+        chosen = overrides.get(ticket["ticket_id"]) or (risk_recipient if ticket["risk_level"] else "")
+        if not chosen:
+            chosen = min(users, key=lambda user: (totals[user["name"]], categories[user["name"]][ticket["category"]]))["name"]
+        assignments.append({"ticket": ticket, "user": by_name[chosen]})
+        totals[chosen] += 1
+        categories[chosen][ticket["category"]] += 1
+    return assignments
+
+
+def verify_assignment_results() -> dict[str, Any]:
+    """Read-only secondary-source checks. Absence or lag is never proof of failure."""
+    pending = unresolved_assignments()
+    verified, warnings = [], []
+    names = sorted({row["target_name"] for row in pending.values()})
+    def read_handler(name):
+        try:
+            return name, {row["ticket_id"]: row for row in fetch_open_handler_rows(name)}, None
+        except Exception:
+            return name, {}, True
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        observations = list(pool.map(read_handler, names))
+    for name, current, error in observations:
+        if error:
+            warnings.append(f"{name}的处理人数据暂时无法读取")
+            continue
+        conn = get_db()
+        for ticket_id, audit in pending.items():
+            row = current.get(ticket_id)
+            observed_at = row.get("fetched_at", "") if row else ""
+            if audit["target_name"] != name or not row or row.get("handler") != name:
+                continue
+            # A read that started before submission must not certify this attempt.
+            if not observed_at or observed_at < audit["requested_at"]:
+                continue
+            cursor = conn.execute(
+                "UPDATE assignment_audit SET state='已核验', message=? WHERE id=? AND state IN (?,?,?) "
+                "AND id=(SELECT MAX(b.id) FROM assignment_audit b WHERE b.ticket_id=? AND b.state NOT IN ('失败','未提交'))",
+                (f"源工单库核验：当前处理人为{name}；读取时间 {observed_at}（源库同步可能延迟）", audit["id"], *ASSIGNMENT_UNRESOLVED, ticket_id),
+            )
+            if cursor.rowcount:
+                verified.append(ticket_id)
+        conn.commit()
+        conn.close()
+    return {"verified": verified, "remaining": len(pending) - len(verified), "warnings": warnings,
+            "source": "源工单库处理人；非天润实时详情，存在同步延迟，查不到不判失败"}
 
 
 def normalize_category(raw: str) -> str:
@@ -314,6 +699,139 @@ def fetch_ticket_day(day: date) -> list[dict[str, Any]]:
         response.raise_for_status()
         rows.extend(parse_ticket_rows(BeautifulSoup(response.text, "html.parser")))
     return rows
+
+
+def parse_merchant_rows(soup: BeautifulSoup) -> list[dict[str, Any]]:
+    """Parse the separate merchant-app inspection list.
+
+    Merchant rows use the event id as the source key, while the visible
+    inspection number is carried by ``data-inspect`` and is the business id
+    shown to operators.
+    """
+    now = datetime.now(BEIJING_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
+    records: list[dict[str, Any]] = []
+    for tr in soup.select("tr.row[data-source='merchant'], tr.row"):
+        if tr.get("data-source") not in {None, "merchant"}:
+            continue
+        cells = [clean(td.get_text(" ", strip=True)) for td in tr.find_all("td")]
+        if len(cells) < 13:
+            continue
+        event_id = clean(tr.get("data-event-id"))
+        inspection_id = clean(tr.get("data-inspect")) or cells[1]
+        if not event_id:
+            event_id = inspection_id
+        created_at = cells[8]
+        created_date = created_at[:10] if re.match(r"\d{4}-\d{2}-\d{2}", created_at) else ""
+        brand = cells[3]
+        inspect_status = cells[5] or "未知"
+        records.append(
+            {
+                "event_id": event_id,
+                "inspection_id": inspection_id,
+                "shop_id": cells[2],
+                "brand": "" if brand in {"-", "—"} else brand,
+                "description": cells[4],
+                "inspect_status": inspect_status,
+                "abnormal_state": cells[6] if cells[6] not in {"", "—"} else "待确认",
+                "abnormal_type": cells[7] if cells[7] not in {"", "—"} else "",
+                "created_at": created_at,
+                "created_date": created_date,
+                "completed_at": cells[9] if cells[9] not in {"", "—"} else "",
+                "duration_text": cells[10] if cells[10] not in {"", "—"} else "",
+                "duration_minutes": parse_duration(cells[10]),
+                "pipeline_text": cells[11],
+                "is_ka": int(bool(brand and brand not in {"-", "—"})),
+                "is_open": int(inspect_status in MERCHANT_PENDING_STATUSES),
+                "fetched_at": now,
+            }
+        )
+    return list({row["event_id"]: row for row in records}.values())
+
+
+def fetch_merchant_day(day: date, open_only: bool = False) -> list[dict[str, Any]]:
+    session = source_session()
+    url = urljoin(SOURCE_BASE, "list")
+    params: dict[str, Any] = {"tab": "merchant", "page": 1}
+    if open_only:
+        params["m_open"] = "1"
+    else:
+        params["m_date"] = day.isoformat()
+    first = session.get(url, params=params, timeout=(8, 30))
+    first.raise_for_status()
+    soup = BeautifulSoup(first.text, "html.parser")
+    pager = clean(soup.select_one(".pager").get_text(" ", strip=True) if soup.select_one(".pager") else "")
+    match = re.search(r"第\s*\d+\s*/\s*(\d+)\s*页", pager)
+    pages = int(match.group(1)) if match else 1
+    rows = parse_merchant_rows(soup)
+    for page in range(2, pages + 1):
+        params["page"] = page
+        response = session.get(url, params=params, timeout=(8, 30))
+        response.raise_for_status()
+        rows.extend(parse_merchant_rows(BeautifulSoup(response.text, "html.parser")))
+    return list({row["event_id"]: row for row in rows}.values())
+
+
+def save_merchant_day(conn: sqlite3.Connection, day: date, records: list[dict[str, Any]]) -> None:
+    conn.execute("DELETE FROM merchant_inspections WHERE created_date = ?", (day.isoformat(),))
+    if records:
+        columns = list(records[0].keys())
+        placeholders = ",".join("?" for _ in columns)
+        sql = f"INSERT OR REPLACE INTO merchant_inspections ({','.join(columns)}) VALUES ({placeholders})"
+        conn.executemany(sql, ([record[col] for col in columns] for record in records))
+    conn.commit()
+
+
+def fetch_open_handler_rows(handler: str) -> list[dict[str, Any]]:
+    """Read the current open queue from the upstream dashboard, not a creation-date slice."""
+    session = source_session()
+    url = urljoin(SOURCE_BASE, "list")
+    params = {"closed": "open", "handler": handler, "page": 1}
+    first = session.get(url, params=params, timeout=(8, 30))
+    first.raise_for_status()
+    soup = BeautifulSoup(first.text, "html.parser")
+    pager = clean(soup.select_one(".pager").get_text(" ", strip=True) if soup.select_one(".pager") else "")
+    match = re.search(r"第\s*\d+\s*/\s*(\d+)\s*页", pager)
+    pages = int(match.group(1)) if match else 1
+    rows = parse_ticket_rows(soup)
+    for page in range(2, pages + 1):
+        params["page"] = page
+        response = session.get(url, params=params, timeout=(8, 30))
+        response.raise_for_status()
+        rows.extend(parse_ticket_rows(BeautifulSoup(response.text, "html.parser")))
+    return list({row["ticket_id"]: row for row in rows}.values())
+
+
+def pending_guard_tickets(refresh: bool = False) -> tuple[list[dict[str, Any]], str | None]:
+    warning = None
+    if refresh:
+        try:
+            live_rows = fetch_open_handler_rows(GUARD_QUEUE_HANDLER)
+            conn = get_db()
+            upsert_ticket_rows(conn, live_rows)
+            conn.close()
+            rows = [row for row in live_rows if row["status"] in PENDING_ASSIGN_STATUSES and row.get("handler") == GUARD_QUEUE_HANDLER]
+            rows.sort(key=lambda row: (-(row.get("duration_minutes") or 0), row.get("created_at") or ""))
+            for row in rows:
+                row["source_url"] = f"{SOURCE_BASE}events/detail?event_id={row['ticket_id']}"
+            return rows, None
+        except Exception as exc:
+            warning = f"实时读取失败，当前展示最近一次本地同步数据：{exc}"
+    conn = get_db()
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            """SELECT ticket_id,shop_id,brand,category_raw,category,description,status,handler,
+                      created_at,duration_text,duration_minutes,fetched_at,is_ka,tags
+               FROM tickets
+               WHERE status IN ('待领取','待接单') AND handler=?
+               ORDER BY COALESCE(duration_minutes,0) DESC, created_at ASC""",
+            (GUARD_QUEUE_HANDLER,),
+        )
+    ]
+    conn.close()
+    for row in rows:
+        row["source_url"] = f"{SOURCE_BASE}events/detail?event_id={row['ticket_id']}"
+    return rows, warning
 
 
 def parse_ticket_rows(soup: BeautifulSoup) -> list[dict[str, Any]]:
@@ -511,6 +1029,16 @@ def save_day(conn: sqlite3.Connection, day: date, records: list[dict[str, Any]])
     conn.commit()
 
 
+def upsert_ticket_rows(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+    columns = list(records[0].keys())
+    placeholders = ",".join("?" for _ in columns)
+    sql = f"INSERT OR REPLACE INTO tickets ({','.join(columns)}) VALUES ({placeholders})"
+    conn.executemany(sql, ([record[col] for col in columns] for record in records))
+    conn.commit()
+
+
 def sync_days(days: int = 14, end_day: date | None = None) -> dict[str, Any]:
     end_day = end_day or date.today()
     start_day = end_day - timedelta(days=max(2, days) - 1)
@@ -524,23 +1052,47 @@ def sync_days(days: int = 14, end_day: date | None = None) -> dict[str, Any]:
         ).lastrowid
         conn.commit()
         total = 0
+        merchant_total = 0
         try:
             current = start_day
             while current <= end_day:
                 SYNC_STATE["message"] = f"正在读取 {current.isoformat()}"
                 records = fetch_ticket_day(current)
+                merchant_records = fetch_merchant_day(current)
                 save_day(conn, current, records)
+                save_merchant_day(conn, current, merchant_records)
                 total += len(records)
+                merchant_total += len(merchant_records)
                 current += timedelta(days=1)
+            # Read the entire current pending queue; a date slice cannot find
+            # older overdue orders or reliably detect their later completion.
+            SYNC_STATE["message"] = "正在核对商家APP当前未完成稽查队列"
+            open_records = fetch_merchant_day(end_day, open_only=True)
+            conn.execute("UPDATE merchant_inspections SET is_open=0")
+            if open_records:
+                columns = list(open_records[0].keys())
+                placeholders = ",".join("?" for _ in columns)
+                sql = f"INSERT OR REPLACE INTO merchant_inspections ({','.join(columns)}) VALUES ({placeholders})"
+                conn.executemany(sql, ([record[col] for col in columns] for record in open_records))
             finished = datetime.now().isoformat(timespec="seconds")
-            message = f"同步完成，共读取 {total} 条工单"
             conn.execute(
-                "UPDATE sync_runs SET finished_at=?,ticket_count=?,status='ok',message=? WHERE id=?",
-                (finished, total, message, run_id),
+                "INSERT OR REPLACE INTO merchant_sync_state(state_key,state_value) VALUES('open_synced_at',?)",
+                (finished,),
+            )
+            for current_day in (start_day + timedelta(days=i) for i in range((end_day - start_day).days + 1)):
+                conn.execute(
+                    "INSERT OR REPLACE INTO merchant_sync_state(state_key,state_value) VALUES(?,?)",
+                    ("day:" + current_day.isoformat(), finished),
+                )
+            message = f"同步完成，天润 {total} 条，商家APP {merchant_total} 条；当前APP未完成 {len(open_records)} 条"
+            conn.execute(
+                "UPDATE sync_runs SET finished_at=?,ticket_count=?,merchant_count=?,status='ok',message=? WHERE id=?",
+                (finished, total, merchant_total, message, run_id),
             )
             conn.commit()
             SYNC_STATE.update({"running": False, "message": message, "finished_at": finished})
-            return {"ok": True, "count": total, "date_from": start_day.isoformat(), "date_to": end_day.isoformat()}
+            return {"ok": True, "count": total + merchant_total, "tianrun_count": total,
+                    "merchant_count": merchant_total, "date_from": start_day.isoformat(), "date_to": end_day.isoformat()}
         except Exception as exc:
             finished = datetime.now().isoformat(timespec="seconds")
             message = f"同步失败：{exc}"
@@ -583,6 +1135,203 @@ def rows_for_range(conn: sqlite3.Connection, start_day: date, end_day: date) -> 
         (start_day.isoformat(), end_day.isoformat()),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def merchant_rows_for_range(conn: sqlite3.Connection, start_day: date, end_day: date) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM merchant_inspections WHERE created_date BETWEEN ? AND ? ORDER BY created_at",
+        (start_day.isoformat(), end_day.isoformat()),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def build_merchant_complaint_ranking(end_day: date | None = None, limit: int = 50) -> dict[str, Any]:
+    """Aggregate the latest rolling 90 days by shop, keeping source counts separate."""
+    conn = get_db()
+    latest = conn.execute(
+        "SELECT MAX(created_date) FROM (SELECT created_date FROM tickets UNION ALL "
+        "SELECT created_date FROM merchant_inspections)"
+    ).fetchone()[0]
+    end_day = end_day or (date.fromisoformat(latest) if latest else date.today())
+    start_day = end_day - timedelta(days=89)
+    start_key, end_key = start_day.isoformat(), end_day.isoformat()
+
+    tianrun_rows = [dict(row) for row in conn.execute(
+        "SELECT ticket_id,shop_id,brand,category,description,status,created_at,is_ka FROM tickets "
+        "WHERE created_date BETWEEN ? AND ? ORDER BY created_at DESC", (start_key, end_key)
+    )]
+    app_events = [dict(row) for row in conn.execute(
+        "SELECT event_id,inspection_id,shop_id,brand,abnormal_type,description,inspect_status,created_at,is_ka "
+        "FROM merchant_inspections WHERE created_date BETWEEN ? AND ? ORDER BY created_at DESC",
+        (start_key, end_key),
+    )]
+    # Multiple source events can point at the same inspection. Count the
+    # business inspection once, retaining its most recent source record.
+    inspections: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in app_events:
+        inspection_key = clean(row["inspection_id"])
+        if inspection_key in {"", "-", "—"}:
+            inspection_key = row["event_id"]
+        inspections.setdefault((clean(row.get("shop_id")), inspection_key), row)
+    app_rows = list(inspections.values())
+
+    by_shop: dict[str, dict[str, Any]] = {}
+
+    def shop_for(shop_id: str) -> dict[str, Any]:
+        return by_shop.setdefault(shop_id, {"shop_id": shop_id, "brand": "", "brand_at": "", "is_ka": False,
+                                            "tianrun_count": 0, "merchant_app_count": 0,
+                                            "last_7_count": 0, "last_ticket_at": "", "tickets": []})
+
+    def add_ticket(shop_id: str, ticket: dict[str, Any], source: str) -> None:
+        if not shop_id or shop_id.strip() in {"-", "—"}:
+            return
+        shop = shop_for(shop_id.strip())
+        brand = (ticket.get("brand") or "").strip()
+        if brand and brand not in {"-", "—"} and ticket["created_at"] > shop["brand_at"]:
+            shop["brand"] = brand
+            shop["brand_at"] = ticket["created_at"]
+        shop["is_ka"] = shop["is_ka"] or bool(ticket.get("is_ka"))
+        shop["last_ticket_at"] = max(shop["last_ticket_at"], ticket.get("created_at") or "")
+        if (ticket.get("created_at") or "")[:10] >= (end_day - timedelta(days=6)).isoformat():
+            shop["last_7_count"] += 1
+        if source == "天润工单":
+            shop["tianrun_count"] += 1
+            record_id = ticket["ticket_id"]
+            category = ticket.get("category") or "其他"
+            status = ticket.get("status") or ""
+            source_url = f"{SOURCE_BASE}events/detail?event_id={record_id}"
+        else:
+            shop["merchant_app_count"] += 1
+            record_id = ticket.get("inspection_id") or ticket["event_id"]
+            category = ticket.get("abnormal_type") or "商家APP稽查单"
+            status = ticket.get("inspect_status") or ""
+            source_url = f"{SOURCE_BASE}events/detail?event_id={ticket['event_id']}&source=merchant"
+        shop["tickets"].append({
+            "source_label": source,
+            "ticket_id": record_id,
+            "shop_id": shop_id.strip(),
+            "brand": brand or "未匹配品牌",
+            "category": category,
+            "description": ticket.get("description") or "",
+            "status": status,
+            "created_at": ticket.get("created_at") or "",
+            "source_url": source_url,
+        })
+
+    for row in tianrun_rows:
+        add_ticket(row.get("shop_id") or "", row, "天润工单")
+    for row in app_rows:
+        add_ticket(row.get("shop_id") or "", row, "商家APP")
+
+    merchants = []
+    for merchant in by_shop.values():
+        merchant.pop("brand_at")
+        merchant["total"] = merchant["tianrun_count"] + merchant["merchant_app_count"]
+        merchant["tickets"].sort(key=lambda row: row["created_at"], reverse=True)
+        merchants.append(merchant)
+    merchants.sort(key=lambda row: (-row["total"], -row["last_7_count"], row["brand"], row["shop_id"]))
+    tianrun_total = sum(merchant["tianrun_count"] for merchant in merchants)
+    merchant_app_total = sum(merchant["merchant_app_count"] for merchant in merchants)
+    for rank, merchant in enumerate(merchants[:max(1, min(limit, 100))], start=1):
+        merchant["rank"] = rank
+
+    # A zero-count day is only trustworthy when both source queries completed for it.
+    successful_ranges = conn.execute(
+        "SELECT DISTINCT date_from,date_to FROM sync_runs WHERE status='ok' AND date_from<=? AND date_to>=?",
+        (end_key, start_key),
+    ).fetchall()
+    tianrun_synced = set()
+    for from_value, to_value in successful_ranges:
+        first = max(start_day, date.fromisoformat(from_value))
+        last = min(end_day, date.fromisoformat(to_value))
+        cursor = first
+        while cursor <= last:
+            tianrun_synced.add(cursor.isoformat())
+            cursor += timedelta(days=1)
+    app_synced = {
+        row[0][4:] for row in conn.execute(
+            "SELECT state_key FROM merchant_sync_state WHERE state_key LIKE 'day:%' AND substr(state_key,5) BETWEEN ? AND ?",
+            (start_key, end_key),
+        )
+    }
+    conn.close()
+
+    expected_dates = {(start_day + timedelta(days=i)).isoformat() for i in range(90)}
+    fully_synced = tianrun_synced & app_synced & expected_dates
+    contiguous_days = 0
+    cursor = end_day
+    while cursor.isoformat() in fully_synced:
+        contiguous_days += 1
+        cursor -= timedelta(days=1)
+    missing_days = sorted(expected_dates - fully_synced)
+    return {
+        "period_start": start_key,
+        "period_end": end_key,
+        "window_days": 90,
+        "coverage": {
+            "fully_synced_days": len(fully_synced),
+            "expected_days": 90,
+            "contiguous_days_to_end": contiguous_days,
+            "missing_days": len(missing_days),
+            "first_missing_date": missing_days[0] if missing_days else None,
+            "complete": len(fully_synced) == 90,
+            "tianrun_synced_days": len(tianrun_synced),
+            "merchant_app_synced_days": len(app_synced),
+        },
+        "merchant_count": len(merchants),
+        "tianrun_count": tianrun_total,
+        "merchant_app_count": merchant_app_total,
+        "total_count": tianrun_total + merchant_app_total,
+        "unmatched_tianrun_count": sum((row.get("shop_id") or "").strip() in {"", "-", "—"} for row in tianrun_rows),
+        "unmatched_merchant_app_count": sum((row.get("shop_id") or "").strip() in {"", "-", "—"} for row in app_rows),
+        "ranking": merchants[:max(1, min(limit, 100))],
+        "definition": "近三个月按滚动90天统计，截止本地最新数据日，不随上方分析日期切换；按店铺ID归集，品牌仅为展示名称；提单次数不代表投诉成立次数。天润按工单ID、APP按稽查单ID计数，同一事项跨入口不去重；无店铺ID记录不参与排行。",
+    }
+
+
+def merchant_age_minutes(created_at: str, now: datetime | None = None) -> int | None:
+    try:
+        created = datetime.fromisoformat(created_at)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=BEIJING_TZ)
+    except (TypeError, ValueError):
+        return None
+    current = now or datetime.now(BEIJING_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=BEIJING_TZ)
+    return max(0, int((current.astimezone(BEIJING_TZ) - created).total_seconds() // 60))
+
+
+def merchant_record_payload(record: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    age_minutes = merchant_age_minutes(record.get("created_at", ""), now)
+    risk_hits = merge_risk_hits(
+        [("问题描述", record.get("description", "")), ("异常类型", record.get("abnormal_type", ""))]
+    )
+    return {
+        "event_id": record["event_id"],
+        "inspection_id": record["inspection_id"],
+        "shop_id": record["shop_id"],
+        "brand": record.get("brand") or "非KA/未匹配",
+        "description": record.get("description") or "未填写问题描述",
+        "inspect_status": record.get("inspect_status") or "未知",
+        "abnormal_state": record.get("abnormal_state") or "待确认",
+        "abnormal_type": record.get("abnormal_type") or "未分类",
+        "created_at": record.get("created_at") or "",
+        "completed_at": record.get("completed_at") or "",
+        "duration_text": record.get("duration_text") or "",
+        "pipeline_text": record.get("pipeline_text") or "",
+        "age_minutes": age_minutes,
+        "age_hours": round(age_minutes / 60, 1) if age_minutes is not None else None,
+        "is_ka": bool(record.get("is_ka")),
+        "is_open": bool(record.get("is_open")),
+        "overdue_24h": bool(record.get("is_open") and record.get("inspect_status") in {"未稽查", "待稽查"}
+                            and not record.get("completed_at") and age_minutes is not None and age_minutes >= 1440),
+        "risk_level": min(
+            (hit["level"] for hit in risk_hits), key=lambda level: RISK_LEVEL_ORDER.get(level, 99)
+        ) if risk_hits else "",
+        "risk_hits": risk_hits,
+        "source_url": f"{SOURCE_BASE}events/detail?event_id={record['event_id']}&source=merchant",
+    }
 
 
 def classify_topic(record: dict[str, Any]) -> str:
@@ -725,6 +1474,188 @@ def build_category_insights(
 
 def safe_pct(part: float, total: float) -> float:
     return round(part * 100 / total, 1) if total else 0.0
+
+
+def natural_week_start(day: date) -> date:
+    return day - timedelta(days=day.weekday())
+
+
+def completion_record_result(record: dict[str, Any], as_of: datetime | None = None) -> dict[str, Any]:
+    """Measure submit-to-first-inspection time; never substitute ticket close/duration fields."""
+    created_raw = clean(record.get("created_at"))
+    try:
+        created = datetime.fromisoformat(created_raw)
+        if created.tzinfo is not None:
+            created = created.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        created = None
+
+    completed_values = re.findall(
+        r"稽查完成\s*[:：]?\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+        clean(record.get("check_meta")),
+    )
+    parsed = []
+    for value in completed_values:
+        try:
+            parsed.append(datetime.strptime(value, "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            continue
+    parsed.sort()
+    marker = clean(record.get("response_text")) == "稽查完成后反馈"
+    check_meta = clean(record.get("check_meta"))
+    status = "待核验"
+    reason = ""
+    first_completed = ""
+    seconds = None
+
+    if created is None:
+        reason = "商家提单时间缺失或格式异常"
+    elif parsed and parsed[0] < created:
+        first_completed = parsed[0].strftime("%Y-%m-%d %H:%M:%S")
+        reason = "详情存在早于提单时间的稽查完成节点，关联关系待核验"
+    elif parsed:
+        first = parsed[0]
+        seconds = (first - created).total_seconds()
+        first_completed = first.strftime("%Y-%m-%d %H:%M:%S")
+        status = "24小时内" if seconds <= 24 * 60 * 60 else "超时"
+    elif not clean(record.get("detail_status")):
+        reason = "工单详情尚未抓取"
+    elif record.get("detail_status", "") != "ok":
+        reason = "工单详情读取失败"
+    elif "稽查完成" in check_meta:
+        reason = "存在稽查完成节点，但时间格式无法识别"
+    else:
+        current = as_of or datetime.now(BEIJING_TZ)
+        if current.tzinfo is not None:
+            current = current.astimezone(BEIJING_TZ).replace(tzinfo=None)
+        seconds = int((current - created).total_seconds())
+        if seconds < 0:
+            seconds = None
+            reason = "商家提单时间晚于当前统计时点，暂待核验"
+        elif seconds < 24 * 60 * 60:
+            status = "未完成"
+            reason = "详情未找到稽查完成时间，按当前未完成计；尚未超过24小时"
+        else:
+            status = "超时未完成"
+            reason = "详情未找到稽查完成时间，按当前未完成计；已超过24小时"
+        if marker and status != "待核验":
+            reason += "（仅有稽查完成后反馈标记）"
+
+    return {
+        "ticket_id": str(record.get("ticket_id", "")),
+        "category": record.get("category") or "其他",
+        "created_at": created_raw,
+        "first_inspect_completed_at": first_completed,
+        "elapsed_seconds": seconds,
+        "elapsed_hours": round(seconds / 3600, 2) if seconds is not None else None,
+        "result": status,
+        "reason": reason,
+        "source_url": f"{SOURCE_BASE}events/detail?event_id={record.get('ticket_id', '')}",
+    }
+
+
+def build_completion_stats(records: list[dict[str, Any]], as_of: datetime | None = None) -> dict[str, Any]:
+    """Calculate submit-to-first-inspection completion metrics from cached detail nodes."""
+    valid: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    pending = Counter()
+    classified = []
+    for record in records:
+        result = completion_record_result(record, as_of)
+        classified.append((record, result))
+        if result["result"] == "待核验":
+            pending[result["reason"]] += 1
+            continue
+        valid.append((record, result))
+
+    def one_group(group: list[tuple[dict[str, Any], dict[str, Any]]], pending_count: int = 0) -> dict[str, Any]:
+        total = len(group)
+        within24 = sum(result["result"] == "24小时内" for _, result in group)
+        return {
+            "completed": total,
+            "within_24h": within24,
+            "rate_24h": safe_pct(within24, total),
+            "verified_time_count": sum(bool(result["first_inspect_completed_at"]) for _, result in group),
+            "not_completed_count": sum(result["result"] in {"未完成", "超时未完成"} for _, result in group),
+            "overdue_not_completed_count": sum(result["result"] == "超时未完成" for _, result in group),
+            "pending_verification": pending_count,
+        }
+
+    overall = one_group(valid, sum(pending.values()))
+    categories = []
+    for category in [*CORE_CATEGORY_ORDER, "其他"]:
+        group = [(record, result) for record, result in valid if record.get("category") == category]
+        pending_count = sum(result["result"] == "待核验" for record, result in classified if record.get("category") == category)
+        item = one_group(group, pending_count)
+        item["category"] = category
+        categories.append(item)
+    return {
+        **overall,
+        "categories": categories,
+        "excluded_breakdown": [{"reason": reason, "count": count} for reason, count in pending.items()],
+        "source_definition": "口径：首次稽查完成时间 − 商家提单时间 ≤ 24小时；提单时间暂取天润工单创建时间。详情读取成功但未找到稽查完成时间的，按当前未完成计入分母：未满24小时列未完成，达到24小时列超时未完成；后续取得首次完成时间后按实际耗时重算。详情未抓取、读取失败、时间格式异常或节点冲突仍待核验，不纳入分母；“稽查完成后反馈”标记不替代实际完成时间。",
+    }
+
+
+def completion_rows_for_range(conn: sqlite3.Connection, start_day: date, end_day: date) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT t.*, COALESCE(e.check_meta,'') AS check_meta,
+                  COALESCE(e.detail_status,'') AS detail_status
+           FROM tickets t LEFT JOIN ticket_evidence e ON e.ticket_id=t.ticket_id
+           WHERE t.created_date BETWEEN ? AND ? ORDER BY t.created_at""",
+        (start_day.isoformat(), end_day.isoformat()),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def build_completion_week_snapshot(week_start: date, week_end: date) -> dict[str, Any]:
+    conn = get_db()
+    try:
+        rows = completion_rows_for_range(conn, week_start, week_end)
+    finally:
+        conn.close()
+    as_of = datetime.now(BEIJING_TZ)
+    days = []
+    day = week_start
+    while day <= week_end:
+        day_rows = [row for row in rows if row["created_date"] == day.isoformat()]
+        days.append({
+            "date": day.isoformat(),
+            "stats": build_completion_stats(day_rows, as_of),
+            "records": [completion_record_result(row, as_of) for row in day_rows],
+        })
+        day += timedelta(days=1)
+    return {
+        "week_start": week_start.isoformat(),
+        "week_end": week_end.isoformat(),
+        "complete": week_end == week_start + timedelta(days=6) and date.today() > week_end,
+        "updated_at": as_of.isoformat(timespec="seconds"),
+        "days": days,
+    }
+
+
+def build_completion_day_snapshot(selected: date) -> dict[str, Any]:
+    conn = get_db()
+    try:
+        rows = completion_rows_for_range(conn, selected, selected)
+    finally:
+        conn.close()
+    as_of = datetime.now(BEIJING_TZ)
+    stats = build_completion_stats(rows, as_of)
+    stats["selected_date"] = selected.isoformat()
+    return {
+        "date": selected.isoformat(),
+        "stats": stats,
+        "records": [completion_record_result(row, as_of) for row in rows],
+    }
+
+
+def build_completion_records(start_day: date, end_day: date) -> list[dict[str, Any]]:
+    conn = get_db()
+    try:
+        rows = completion_rows_for_range(conn, start_day, end_day)
+    finally:
+        conn.close()
+    return [completion_record_result(record) for record in rows]
 
 
 def clip_text(value: str, limit: int = 180) -> str:
@@ -1069,6 +2000,15 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
     conn = get_db()
     start_day = selected - timedelta(days=max(window, 8) - 1)
     records = rows_for_range(conn, start_day, selected)
+    merchant_records = merchant_rows_for_range(conn, start_day, selected)
+    merchant_pending = [dict(row) for row in conn.execute("SELECT * FROM merchant_inspections WHERE is_open=1")]
+    completion_start = selected - timedelta(days=29)
+    completion_previous_start = selected - timedelta(days=59)
+    completion_current_rows = completion_rows_for_range(conn, completion_start, selected)
+    completion_previous_rows = completion_rows_for_range(
+        conn, completion_previous_start, completion_start - timedelta(days=1)
+    )
+    merchant_sync = dict(conn.execute("SELECT state_key,state_value FROM merchant_sync_state").fetchall())
     last_sync = conn.execute(
         "SELECT finished_at,message FROM sync_runs WHERE status='ok' ORDER BY id DESC LIMIT 1"
     ).fetchone()
@@ -1089,6 +2029,9 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in records:
         grouped[record["created_date"]].append(record)
+    merchant_grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in merchant_records:
+        merchant_grouped[record["created_date"]].append(record)
 
     # 当天尚未结束时，环比和近7日均值统一截取到当前时刻，避免用“今日半天”
     # 对比“昨日全天”造成虚假下降。历史日期则按完整自然日分析。
@@ -1099,21 +2042,30 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
             return day_records
         return [r for r in day_records if len(r["created_at"]) >= 16 and r["created_at"][11:16] <= cutoff_time]
 
+    if cutoff_time:
+        completion_current_rows = comparable(completion_current_rows)
+        completion_previous_rows = comparable(completion_previous_rows)
+
     selected_key = selected.isoformat()
     previous_key = (selected - timedelta(days=1)).isoformat()
     current = comparable(grouped.get(selected_key, []))
     previous = comparable(grouped.get(previous_key, []))
+    merchant_current = comparable(merchant_grouped.get(selected_key, []))
+    merchant_previous = comparable(merchant_grouped.get(previous_key, []))
 
     trend = []
     cursor = start_day
     while cursor <= selected:
         day_records = comparable(grouped.get(cursor.isoformat(), []))
+        app_records = comparable(merchant_grouped.get(cursor.isoformat(), []))
         counts = Counter(r["category"] for r in day_records)
         trend.append(
             {
                 "date": cursor.isoformat(),
                 "label": cursor.strftime("%m-%d"),
-                "total": len(day_records),
+                "total": len(day_records) + len(app_records),
+                "tianrun_count": len(day_records),
+                "merchant_app_count": len(app_records),
                 "categories": {cat: counts.get(cat, 0) for cat in CATEGORY_ORDER},
                 "ka_ratio": safe_pct(sum(r["is_ka"] for r in day_records), len(day_records)),
             }
@@ -1160,6 +2112,14 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
             )
     category_change.sort(key=lambda item: item["delta"], reverse=True)
     category_insights = build_category_insights(current, previous, evidence_by_ticket, selected)
+    completion = build_completion_stats(completion_current_rows)
+    completion_previous = build_completion_stats(completion_previous_rows)
+    completion["period_start"] = completion_start.isoformat()
+    completion["period_end"] = selected_key
+    completion["previous_period_start"] = completion_previous_start.isoformat()
+    completion["previous_period_end"] = (completion_start - timedelta(days=1)).isoformat()
+    completion["previous"] = completion_previous
+    completion["rate_24h_delta"] = round(completion["rate_24h"] - completion_previous["rate_24h"], 1)
 
     anomaly_records = []
     risk_records = []
@@ -1301,9 +2261,42 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
         "definition": "店铺ID能够在 Forge 的 KA 店铺映射中匹配到品牌，即列表中的品牌字段非空。",
     }
 
-    current_total = len(current)
-    previous_total = len(previous)
-    prior_counts = [len(comparable(grouped.get(key, []))) for key in prior_7_keys]
+    now = datetime.now(BEIJING_TZ)
+    app_rows = [merchant_record_payload(row, now) for row in merchant_current]
+    app_pending_rows = [merchant_record_payload(row, now) for row in merchant_pending]
+    app_pending_rows.sort(key=lambda row: row["created_at"])
+    overdue_rows = [row for row in app_pending_rows if row["overdue_24h"]]
+    type_counts = Counter(row["abnormal_type"] for row in app_rows)
+    previous_type_counts = Counter(row["abnormal_type"] or "未分类" for row in merchant_previous)
+    merchant_app = {
+        "count": len(app_rows),
+        "previous": len(merchant_previous),
+        "delta": len(app_rows) - len(merchant_previous),
+        "pct": round((len(app_rows) - len(merchant_previous)) * 100 / len(merchant_previous), 1)
+        if merchant_previous else (100.0 if app_rows else 0.0),
+        "loaded": "day:" + selected_key in merchant_sync,
+        "previous_loaded": "day:" + previous_key in merchant_sync,
+        "day_synced_at": merchant_sync.get("day:" + selected_key),
+        "open_synced_at": merchant_sync.get("open_synced_at"),
+        "as_of": now.isoformat(timespec="seconds"),
+        "pending_count": sum(row["is_open"] for row in app_rows),
+        "abnormal_count": sum(row["abnormal_state"] == "有异常" for row in app_rows),
+        "normal_count": sum(row["abnormal_state"] == "无异常" for row in app_rows),
+        "ka_count": sum(row["is_ka"] for row in app_rows),
+        "current_pending_count": len(app_pending_rows),
+        "overdue_24h_count": len(overdue_rows),
+        "overdue_24h_records": overdue_rows,
+        "pending_records": app_pending_rows,
+        "risk_records": [row for row in app_rows if row["risk_hits"]],
+        "type_breakdown": [{"name": name, "count": count, "previous": previous_type_counts.get(name, 0),
+                            "delta": count - previous_type_counts.get(name, 0)}
+                           for name, count in type_counts.most_common()],
+        "records": sorted(app_rows, key=lambda row: (not row["is_open"], row["created_at"])),
+        "definition": "APP发起稽查单单独计数；与天润工单相加为入口新增量，同一事件跨入口反馈不去重。当前超时存量不受分析日期限制。",
+    }
+    current_total = len(current) + len(merchant_current)
+    previous_total = len(previous) + len(merchant_previous)
+    prior_counts = [len(comparable(grouped.get(key, []))) + len(comparable(merchant_grouped.get(key, []))) for key in prior_7_keys]
     avg7_total = round(sum(prior_counts) / len(prior_counts), 1) if prior_counts else 0
     top_driver = category_change[0] if category_change else None
     return {
@@ -1314,6 +2307,11 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
         "last_sync": dict(last_sync) if last_sync else None,
         "summary": {
             "total": current_total,
+            "tianrun_count": len(current),
+            "merchant_app_count": len(merchant_current),
+            "tianrun_previous": len(previous),
+            "merchant_app_previous": len(merchant_previous),
+            "tianrun_delta": len(current) - len(previous),
             "previous": previous_total,
             "delta": current_total - previous_total,
             "pct": round((current_total - previous_total) * 100 / previous_total, 1) if previous_total else 0,
@@ -1327,6 +2325,7 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
         "daily_trend": trend[-window:],
         "category_change": category_change,
         "category_insights": category_insights,
+        "completion_rate": completion,
         "growth_anomalies": growth_anomalies,
         "anomaly_summary": [{"reason": key, "count": count} for key, count in anomaly_counts.most_common()],
         "operational_anomaly_summary": [
@@ -1337,12 +2336,360 @@ def build_dashboard(selected: date, window: int) -> dict[str, Any]:
         "risk_records": risk_records,
         "topics": topics,
         "ka": ka,
+        "merchant_app": merchant_app,
     }
 
 
+def load_employee_dashboard_data() -> dict[str, Any]:
+    if not EMPLOYEE_DASHBOARD_DATA.exists():
+        return {}
+    try:
+        payload = json.loads(EMPLOYEE_DASHBOARD_DATA.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def employee_service_request(method: str, path: str) -> requests.Response:
+    session = requests.Session()
+    session.trust_env = False
+    return session.request(method, EMPLOYEE_DASHBOARD_SERVICE + path, timeout=(2, 8))
+
+
+def report_run_directory(report_date: str, slot: str) -> Path | None:
+    """Resolve only the two formal daily-report slots; verification runs stay private."""
+    if slot not in REPORT_SLOTS:
+        return None
+    try:
+        parsed = date.fromisoformat(report_date)
+    except ValueError:
+        return None
+    if parsed.isoformat() != report_date:
+        return None
+    run_dir = REPORT_ARCHIVE_ROOT / report_date / slot
+    try:
+        if not run_dir.resolve().is_relative_to(REPORT_ARCHIVE_ROOT.resolve()):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return run_dir
+
+
+def report_file(run_dir: Path, filename: str) -> Path | None:
+    """Only expose regular files immediately inside the selected report directory."""
+    target = run_dir / filename
+    try:
+        resolved = target.resolve()
+        if resolved != run_dir.resolve() / filename or not target.is_file():
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return target
+
+
+def read_report_metadata(run_dir: Path) -> dict[str, Any]:
+    metadata_path = report_file(run_dir, "run-metadata.json")
+    if metadata_path is None:
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    # The generator writes this file last, after the report and source data.
+    return payload if isinstance(payload, dict) and payload.get("finished_at") else {}
+
+
+def report_screenshots(metadata: dict[str, Any]) -> set[str]:
+    screenshots = metadata.get("screenshots")
+    if not isinstance(screenshots, dict):
+        return set()
+    return {
+        filename for filename in screenshots.values()
+        if isinstance(filename, str) and re.fullmatch(r"[a-zA-Z0-9_-]+\.png", filename)
+    }
+
+
+def completed_report(report_date: str, slot: str) -> tuple[Path, dict[str, Any]] | None:
+    run_dir = report_run_directory(report_date, slot)
+    if run_dir is None:
+        return None
+    metadata = read_report_metadata(run_dir)
+    expected_time = f"{slot[:2]}:{slot[2:]}"
+    if not metadata or metadata.get("planned_at") != f"{report_date} {expected_time}":
+        return None
+    if any(report_file(run_dir, filename) is None for filename in ("analysis.html", "analysis.md", "analysis-data.json")):
+        return None
+    return run_dir, metadata
+
+
+def list_daily_reports() -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    try:
+        day_directories = list(REPORT_ARCHIVE_ROOT.iterdir())
+    except OSError:
+        return reports
+    for day_dir in day_directories:
+        if not day_dir.is_dir():
+            continue
+        try:
+            parsed_day = date.fromisoformat(day_dir.name)
+        except ValueError:
+            continue
+        if parsed_day.isoformat() != day_dir.name:
+            continue
+        for slot, slot_label in REPORT_SLOTS.items():
+            completed = completed_report(day_dir.name, slot)
+            if completed is None:
+                continue
+            run_dir, metadata = completed
+            errors = metadata.get("errors") if isinstance(metadata.get("errors"), list) else []
+            screenshots = report_screenshots(metadata)
+            screenshot_count = sum(
+                1 for filename in screenshots if report_file(run_dir, filename) is not None
+            )
+            refresh_ok = bool(metadata.get("merchant_refresh_ok")) and bool(metadata.get("employee_refresh_ok"))
+            status = "success" if refresh_ok and not errors and screenshot_count == len(screenshots) else "partial"
+            try:
+                revision = "-".join(
+                    str((run_dir / filename).stat().st_mtime_ns)
+                    for filename in ("run-metadata.json", "analysis.html")
+                )
+            except OSError:
+                continue
+            reports.append(
+                {
+                    "id": f"{day_dir.name}-{slot}",
+                    "date": day_dir.name,
+                    "slot": slot,
+                    "slot_label": slot_label,
+                    "planned_at": metadata.get("planned_at") or f"{day_dir.name} {slot_label[:5]}",
+                    "started_at": metadata.get("started_at") or "",
+                    "finished_at": metadata.get("finished_at") or "",
+                    "status": status,
+                    "status_label": "生成成功" if status == "success" else "部分完成",
+                    "error_count": len(errors),
+                    "screenshot_count": screenshot_count,
+                    "revision": revision,
+                    "report_url": f"/reports/{day_dir.name}/{slot}/",
+                    "embed_url": f"/reports/{day_dir.name}/{slot}/?embed=1",
+                    "markdown_url": f"/reports/{day_dir.name}/{slot}/analysis.md?download=1",
+                    "data_url": f"/reports/{day_dir.name}/{slot}/analysis-data.json?download=1",
+                }
+            )
+    reports.sort(key=lambda item: (item["date"], item["slot"]), reverse=True)
+    return reports
+
+
 @app.get("/")
+def workspace():
+    return render_template("workspace.html")
+
+
+@app.get("/daily")
 def index():
-    return render_template("index.html", today=latest_ticket_date())
+    return render_template(
+        "index.html",
+        today=latest_ticket_date(),
+        embedded=request.args.get("embed") == "1",
+    )
+
+
+@app.get("/employee-dashboard")
+def employee_dashboard_page():
+    if not EMPLOYEE_DASHBOARD_HTML.exists():
+        return Response("员工工单卡点看板正在首次生成，请稍后刷新。", status=503, content_type="text/plain; charset=utf-8")
+    try:
+        html = EMPLOYEE_DASHBOARD_HTML.read_text(encoding="utf-8")
+    except OSError:
+        return Response("员工工单卡点看板暂时无法读取。", status=503, content_type="text/plain; charset=utf-8")
+
+    html = html.replace("fetch('/api/status", "fetch('/api/employee/status")
+    html = html.replace("fetch('/api/refresh", "fetch('/api/employee/refresh")
+    if request.args.get("embed") == "1":
+        embedded_style = """
+        <style id="workspace-embedded-style">
+          body { background: #f6f7f5 !important; }
+          .shell { max-width: none !important; padding: 22px !important; }
+          .header { display: none !important; }
+          .toolbar { top: 0 !important; border-radius: 10px !important; }
+          @media (max-width: 700px) { .shell { padding: 12px !important; } }
+        </style>
+        """
+        html = html.replace("</head>", embedded_style + "</head>", 1)
+    return Response(html, content_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/reports")
+def api_daily_reports():
+    reports = list_daily_reports()
+    response = jsonify(
+        {
+            "ok": True,
+            "reports": reports,
+            "summary": {
+                "report_count": len(reports),
+                "day_count": len({item["date"] for item in reports}),
+                "latest": reports[0] if reports else None,
+                "schedule": ["18:00", "23:59"],
+            },
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/reports/<report_date>/<slot>/")
+def daily_report_document(report_date: str, slot: str):
+    completed = completed_report(report_date, slot)
+    if completed is None:
+        return Response("日报不存在或尚未生成。", status=404, content_type="text/plain; charset=utf-8")
+    run_dir, _metadata = completed
+    report_path = run_dir / "analysis.html"
+    if request.args.get("embed") == "1":
+        try:
+            report_html = report_path.read_text(encoding="utf-8")
+        except OSError:
+            return Response("日报暂时无法读取。", status=503, content_type="text/plain; charset=utf-8")
+        embedded_style = """
+        <style id="workspace-report-embedded-style">
+          body { background: #fff !important; }
+          main { max-width: 1180px !important; margin: 0 auto !important; padding: 30px 38px 54px !important; box-shadow: none !important; border-radius: 0 !important; }
+          @media (max-width: 700px) { main { padding: 20px 16px 40px !important; } }
+        </style>
+        """
+        report_html = report_html.replace("</head>", embedded_style + "</head>", 1)
+        response = Response(report_html, content_type="text/html; charset=utf-8")
+    else:
+        response = send_file(report_path, mimetype="text/html", max_age=0)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+    return response
+
+
+@app.get("/reports/<report_date>/<slot>/<filename>")
+def daily_report_asset(report_date: str, slot: str, filename: str):
+    completed = completed_report(report_date, slot)
+    if completed is None:
+        return Response("文件不存在。", status=404, content_type="text/plain; charset=utf-8")
+    run_dir, metadata = completed
+    allowed_files = REPORT_DOWNLOAD_FILES | report_screenshots(metadata)
+    if filename not in allowed_files:
+        return Response("文件不存在。", status=404, content_type="text/plain; charset=utf-8")
+    target = report_file(run_dir, filename)
+    if target is None:
+        return Response("文件不存在。", status=404, content_type="text/plain; charset=utf-8")
+    response = send_file(
+        target,
+        as_attachment=request.args.get("download") == "1",
+        download_name=f"{report_date}-{slot}-{filename}",
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.get("/api/workspace/overview")
+def api_workspace_overview():
+    selected_date = latest_ticket_date()
+    daily = build_dashboard(date.fromisoformat(selected_date), 14)
+    last_sync = daily.get("last_sync")
+    if isinstance(last_sync, dict):
+        daily_generated_at = last_sync.get("finished_at") or last_sync.get("started_at") or ""
+    else:
+        daily_generated_at = last_sync or daily.get("cutoff_time") or ""
+    employee = load_employee_dashboard_data()
+    employee_available = bool(employee)
+    totals = employee.get("totals") if isinstance(employee.get("totals"), dict) else {}
+    employees = employee.get("employees") if isinstance(employee.get("employees"), list) else []
+    busiest = max(
+        (item for item in employees if isinstance(item, dict)),
+        key=lambda item: int(item.get("total") or 0),
+        default={},
+    )
+    completed_daily = totals.get("completed_daily") if isinstance(totals.get("completed_daily"), dict) else {}
+    created_daily = totals.get("created_daily") if isinstance(totals.get("created_daily"), dict) else {}
+    flow_days = employee.get("flow_days") if isinstance(employee.get("flow_days"), list) else []
+    flow_days = flow_days[-7:]
+    summary = daily.get("summary", {})
+    return jsonify(
+        {
+            "ok": True,
+            "daily": {
+                "selected_date": selected_date,
+                "generated_at": daily_generated_at,
+                "total": summary.get("total", 0),
+                "previous": summary.get("previous", 0),
+                "pct": summary.get("pct", 0),
+                "risk_ticket_count": summary.get("risk_ticket_count", 0),
+                "record_anomaly_count": summary.get("record_anomaly_count", 0),
+                "top_driver": summary.get("top_driver") or {},
+                "trend": [
+                    {
+                        "date": item.get("date", ""),
+                        "total": item.get("total", 0),
+                    }
+                    for item in daily.get("daily_trend", [])[-7:]
+                ],
+            },
+            "employee": {
+                "available": employee_available,
+                "generated_at": employee.get("generated_at", ""),
+                "tickets": totals.get("tickets", 0) if employee_available else None,
+                "employees": totals.get("employees", 0) if employee_available else None,
+                "over48": totals.get("over48", 0) if employee_available else None,
+                "over120": totals.get("over120", 0) if employee_available else None,
+                "completed_today": completed_daily.get(selected_date, 0) if employee_available else None,
+                "created_today": created_daily.get(selected_date, 0) if employee_available else None,
+                "busiest": {
+                    "name": busiest.get("name", "—") if employee_available else "—",
+                    "total": busiest.get("total", 0) if employee_available else None,
+                },
+                "trend": [
+                    {
+                        "date": day,
+                        "created": created_daily.get(day, 0),
+                        "completed": completed_daily.get(day, 0),
+                    }
+                    for day in flow_days
+                ],
+            },
+        }
+    )
+
+
+@app.get("/api/employee/status")
+def api_employee_status():
+    try:
+        response = employee_service_request("GET", "/api/status")
+        return Response(response.content, status=response.status_code, content_type=response.headers.get("Content-Type", "application/json"))
+    except requests.RequestException:
+        employee = load_employee_dashboard_data()
+        return jsonify(
+            {
+                "generated_at": employee.get("generated_at", ""),
+                "updating": False,
+                "error": "员工看板刷新服务未连接，当前展示最近一次快照",
+                "interval_seconds": 300,
+            }
+        )
+
+
+@app.post("/api/employee/refresh")
+def api_employee_refresh():
+    try:
+        response = employee_service_request("POST", "/api/refresh")
+        return Response(response.content, status=response.status_code, content_type=response.headers.get("Content-Type", "application/json"))
+    except requests.RequestException:
+        return jsonify({"ok": False, "error": "员工看板刷新服务未连接"}), 503
+
+
+@app.get("/dispatch")
+def dispatch_page():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    return render_template("dispatch.html")
 
 
 @app.get("/api/dashboard")
@@ -1361,6 +2708,31 @@ def api_dashboard():
             "realtime": {**AUTO_SYNC_STATE, "latest_date": latest_ticket_date()},
         }
     )
+
+
+@app.get("/api/merchant-ranking")
+def api_merchant_complaint_ranking():
+    return jsonify({"ok": True, "data": build_merchant_complaint_ranking()})
+
+
+@app.get("/api/completion-records")
+def api_completion_records():
+    try:
+        selected = date.fromisoformat(request.args.get("date", latest_ticket_date()))
+    except ValueError:
+        return jsonify({"ok": False, "error": "日期格式应为 YYYY-MM-DD"}), 400
+    start_day = selected - timedelta(days=29)
+    rows = build_completion_records(start_day, selected)
+    return jsonify({"ok": True, "data": rows})
+
+
+@app.get("/api/completion-day")
+def api_completion_day():
+    try:
+        selected = date.fromisoformat(request.args.get("date", latest_ticket_date()))
+    except ValueError:
+        return jsonify({"ok": False, "error": "日期格式应为 YYYY-MM-DD"}), 400
+    return jsonify({"ok": True, "data": build_completion_day_snapshot(selected)})
 
 
 @app.get("/api/root-causes")
@@ -1469,11 +2841,350 @@ def api_sync():
     return jsonify({"ok": True, "message": "同步任务已启动"})
 
 
+@app.get("/api/tianrun/status")
+def api_tianrun_status():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    summary = cookie_summary()
+    if request.args.get("test") == "1" and summary["configured"]:
+        try:
+            users = tianrun_users("05435")
+            summary.update({"connection": "ok", "message": f"连接正常，查询返回 {len(users)} 名员工"})
+        except PermissionError as exc:
+            summary.update({"connection": "expired", "message": str(exc)})
+        except Exception as exc:
+            summary.update({"connection": "error", "message": str(exc)})
+    else:
+        summary.update(
+            {
+                "connection": "unknown" if summary["configured"] else "missing",
+                "message": "已保存，尚未检测" if summary["configured"] else "尚未配置 Cookie",
+            }
+        )
+    return jsonify({"ok": True, "data": summary})
+
+
+@app.put("/api/tianrun/cookie")
+def api_tianrun_cookie():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    previous = read_tianrun_cookie()
+    try:
+        save_tianrun_cookie(str(payload.get("cookie") or ""))
+        users = tianrun_users("05435")
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        if previous:
+            save_tianrun_cookie(previous)
+        elif TIANRUN_COOKIE_PATH.exists():
+            TIANRUN_COOKIE_PATH.unlink()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    summary = cookie_summary()
+    summary.update({"connection": "ok", "message": f"Cookie 已保存并验证，查询返回 {len(users)} 名员工"})
+    return jsonify({"ok": True, "data": summary})
+
+
+@app.get("/api/tianrun/users")
+def api_tianrun_users():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    query = clean(request.args.get("q", ""))
+    if len(query) < 2:
+        return jsonify({"ok": False, "error": "请输入至少2个字符的姓名或工号"}), 400
+    try:
+        rows = tianrun_users(query)
+    except (PermissionError, RuntimeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "data": rows})
+
+
+@app.get("/api/tianrun/team")
+def api_tianrun_team():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    return jsonify({"ok": True, "data": team_assignment_statistics()})
+
+
+@app.get("/api/tianrun/pending-tickets")
+def api_tianrun_pending_tickets():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    refresh = request.args.get("refresh") == "1"
+    rows, warning = pending_guard_tickets(refresh=refresh)
+    unresolved = unresolved_assignments()
+    rows = [enrich_dispatch_ticket(row, unresolved) for row in rows]
+    return jsonify(
+        {
+            "ok": True,
+            "data": {
+                "queue": GUARD_QUEUE_HANDLER,
+                "statuses": sorted(PENDING_ASSIGN_STATUSES),
+                "tickets": rows,
+                "count": len(rows),
+                "warning": warning,
+                "refreshed_at": min((row.get("fetched_at", "") for row in rows), default=""),
+                "read_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        }
+    )
+
+
+@app.post("/api/tianrun/assignment/batch-preview")
+def api_tianrun_batch_preview():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("ticket_ids"), list) or not isinstance(payload.get("members"), list):
+        return jsonify({"ok": False, "error": "工单和人员必须为列表"}), 400
+    ticket_ids = [clean(str(value)) for value in payload.get("ticket_ids", [])]
+    member_names = [clean(str(value)) for value in payload.get("members", [])]
+    reason = clean(str(payload.get("reason") or ""))
+    ticket_ids = list(dict.fromkeys(ticket_id for ticket_id in ticket_ids if ticket_id))
+    member_names = list(dict.fromkeys(name for name in member_names if name))
+    if not ticket_ids or len(ticket_ids) > 100:
+        return jsonify({"ok": False, "error": "请选择1至100张待领取工单"}), 400
+    if not member_names or len(member_names) > len(TEAM_MEMBERS):
+        return jsonify({"ok": False, "error": "请至少选择一名组员"}), 400
+    if any(name not in TEAM_MEMBERS for name in member_names):
+        return jsonify({"ok": False, "error": "所选人员不在当前组员名单内"}), 400
+    if not reason:
+        return jsonify({"ok": False, "error": "分派理由不能为空"}), 400
+    overrides = payload.get("overrides") or {}
+    risk_recipient = clean(str(payload.get("risk_recipient") or ""))
+    if not isinstance(overrides, dict) or any(key not in ticket_ids or value not in member_names for key, value in overrides.items()):
+        return jsonify({"ok": False, "error": "调整后的接收人须为本次已选员工，工单须在本次选择中"}), 400
+    if risk_recipient and risk_recipient not in member_names:
+        return jsonify({"ok": False, "error": "风险接收人须为本次已选员工"}), 400
+    try:
+        live_rows, warning = pending_guard_tickets(refresh=True)
+        if warning:
+            return jsonify({"ok": False, "error": "无法读取最新队列，暂不能生成分派方案；请刷新后再试"}), 503
+        unresolved = unresolved_assignments()
+        if any(ticket_id in unresolved for ticket_id in ticket_ids):
+            return jsonify({"ok": False, "error": "所选工单存在提交中或待核验记录，请先核验，勿重复分派"}), 409
+        live_by_id = {row["ticket_id"]: enrich_dispatch_ticket(row) for row in live_rows}
+        missing = [ticket_id for ticket_id in ticket_ids if ticket_id not in live_by_id]
+        if missing:
+            return jsonify(
+                {"ok": False, "error": f"以下工单已不在待领取值守队列，请刷新后重选：{', '.join(missing[:10])}"}
+            ), 409
+        users = [exact_tianrun_user(name) for name in member_names]
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    token = secrets.token_urlsafe(24)
+    tickets = sorted((live_by_id[ticket_id] for ticket_id in ticket_ids),
+                     key=lambda row: (RISK_LEVEL_ORDER.get(row["risk_level"], 3), -(row.get("duration_minutes") or 0)))
+    assignments = recommend_assignments(tickets, users, overrides, risk_recipient)
+    for previous in list(TIANRUN_PREVIEWS):
+        if TIANRUN_PREVIEWS[previous]["expires_at"] < time.time() or previous == payload.get("previous_token"):
+            TIANRUN_PREVIEWS.pop(previous, None)
+    TIANRUN_PREVIEWS[token] = {
+        "mode": "batch",
+        "assignments": assignments,
+        "reason": reason[:200],
+        "expires_at": time.time() + 300,
+    }
+    distribution = Counter(item["user"]["name"] for item in assignments)
+    stats = {row["name"]: row for row in team_assignment_statistics()}
+    return jsonify(
+        {
+            "ok": True,
+            "data": {
+                "confirm_token": token,
+                "expires_in": 300,
+                "assign_enabled": TIANRUN_ASSIGN_ENABLED,
+                "reason": reason[:200],
+                "assignments": assignments,
+                "distribution": [{"name": name, "count": distribution[name], "before": stats[name]["assigned_today"],
+                                  "after": stats[name]["assigned_today"] + distribution[name]} for name in member_names],
+                "members": member_names,
+                "warning": warning,
+            },
+        }
+    )
+
+
+@app.post("/api/tianrun/assignment/batch-execute")
+def api_tianrun_batch_execute():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    if not TIANRUN_ASSIGN_ENABLED:
+        return jsonify({"ok": False, "error": "真实分派当前处于关闭状态"}), 403
+    payload = request.get_json(silent=True) or {}
+    token = clean(str(payload.get("confirm_token") or ""))
+    preview = TIANRUN_PREVIEWS.pop(token, None)
+    if not preview or preview.get("mode") != "batch" or preview["expires_at"] < time.time():
+        return jsonify({"ok": False, "error": "批量分派预览已过期，请重新预览"}), 400
+    if not TIANRUN_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "已有分派正在执行，请查看台账，稍后重新预览"}), 409
+    try:
+        return execute_dispatch_preview(preview)
+    finally:
+        TIANRUN_LOCK.release()
+
+
+def execute_dispatch_preview(preview: dict):
+    try:
+        live_rows = fetch_open_handler_rows(GUARD_QUEUE_HANDLER)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"执行前无法读取队列，整批未提交：{exc}"}), 502
+    live_by_id = {row["ticket_id"]: row for row in live_rows
+                  if row["status"] in PENDING_ASSIGN_STATUSES and row.get("handler") == GUARD_QUEUE_HANDLER}
+    unresolved = unresolved_assignments()
+    unavailable = [item["ticket"]["ticket_id"] for item in preview["assignments"]
+                   if item["ticket"]["ticket_id"] not in live_by_id or item["ticket"]["ticket_id"] in unresolved]
+    if unavailable:
+        return jsonify({"ok": False, "error": f"工单已离开待领取队列或已有待核验提交，整批未提交：{', '.join(unavailable[:10])}"}), 409
+    results, stopped = [], False
+    for item in preview["assignments"]:
+        ticket, user = live_by_id[item["ticket"]["ticket_id"]], item["user"]
+        status, audit_id = None, None
+        if stopped:
+            state, message = "未提交", "前序工单登录失效、权限异常或结果不明，本单未发起请求"
+        else:
+            try:
+                user = exact_tianrun_user(user["cno"] or user["name"])
+                if user["name"] != item["user"]["name"]:
+                    raise ValueError("员工账号信息已变化，请重新生成方案")
+                request_body = {
+                    "autoAssign": 0, "handlerId": None, "handlerType": 0, "content": preview["reason"],
+                    "handlerIds": [{"name": user["name"], "handlerId": user["handler_id"], "assignLimit": None}],
+                    "defaultAssignLimit": 1,
+                    "assignTickets": [{"id": ticket["ticket_id"], "taskId": None}], "selectAll": 0,
+                }
+                # Persist before the network write. Restart/disconnect cannot hide an ambiguous attempt.
+                audit_id = save_assignment_audit(ticket, user, preview["reason"], "正在提交", None, "请求提交中；中断后请核验，勿重复分派")
+                status, response_data = tianrun_json("PUT", "/api/ticket/batchAssign", request_body)
+                message = clean(str(response_data.get("message") or response_data.get("msg") or "请求已提交"))
+                state = "幂等完成" if "已是该处理人" in message else "已提交待核验"
+            except TianrunUncertainError as exc:
+                message, state, stopped = str(exc), "提交结果待确认", True
+            except PermissionError as exc:
+                message, state, stopped = str(exc), "失败", True
+            except (ValueError, RuntimeError) as exc:
+                message, state = str(exc), "失败"
+            except Exception:
+                message, state, stopped = "提交异常，请核验台账，勿重复提交", "提交结果待确认", True
+        if audit_id is None:
+            audit_id = save_assignment_audit(ticket, user, preview["reason"], state, status, message)
+        else:
+            conn = get_db()
+            conn.execute("UPDATE assignment_audit SET state=?,response_status=?,message=? WHERE id=?", (state, status, message, audit_id))
+            conn.commit()
+            conn.close()
+        results.append({"audit_id": audit_id, "ticket_id": ticket["ticket_id"], "category": ticket.get("category", "其他"),
+                        "recipient": user["name"], "state": state, "message": message,
+                        "retryable": state in {"失败", "未提交"}})
+    counts = Counter(row["state"] for row in results)
+    return jsonify({"ok": True, "data": {"total": len(results), "success": counts["幂等完成"] + counts["已提交待核验"],
+                    "verified": counts["幂等完成"], "pending": counts["已提交待核验"], "uncertain": counts["提交结果待确认"],
+                    "failed": counts["失败"], "unsubmitted": counts["未提交"], "results": results}})
+
+
+@app.post("/api/tianrun/assignment/verify")
+def api_tianrun_assignment_verify():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    if not TIANRUN_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "正在提交分派，请稍后核验"}), 409
+    try:
+        return jsonify({"ok": True, "data": verify_assignment_results()})
+    finally:
+        TIANRUN_LOCK.release()
+
+
+@app.post("/api/tianrun/assignment/preview")
+def api_tianrun_assignment_preview():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    ticket_id = clean(str(payload.get("ticket_id") or ""))
+    recipient = clean(str(payload.get("recipient") or ""))
+    reason = clean(str(payload.get("reason") or ""))
+    if not ticket_id.isdigit():
+        return jsonify({"ok": False, "error": "工单ID必须为数字"}), 400
+    if not recipient or not reason:
+        return jsonify({"ok": False, "error": "接收人工号/姓名和分派理由不能为空"}), 400
+    try:
+        ticket = assignment_ticket(ticket_id)
+        user = exact_tianrun_user(recipient)
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    token = secrets.token_urlsafe(24)
+    TIANRUN_PREVIEWS[token] = {
+        "ticket_id": ticket_id,
+        "ticket": ticket,
+        "user": user,
+        "reason": reason[:200],
+        "expires_at": time.time() + 300,
+    }
+    return jsonify(
+        {
+            "ok": True,
+            "data": {
+                "confirm_token": token,
+                "expires_in": 300,
+                "ticket": ticket,
+                "recipient": user,
+                "reason": reason[:200],
+                "assign_enabled": TIANRUN_ASSIGN_ENABLED,
+            },
+        }
+    )
+
+
+@app.post("/api/tianrun/assignment/execute")
+def api_tianrun_assignment_execute():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    if not TIANRUN_ASSIGN_ENABLED:
+        return jsonify({"ok": False, "error": "真实分派当前处于关闭状态"}), 403
+    payload = request.get_json(silent=True) or {}
+    token = clean(str(payload.get("confirm_token") or ""))
+    preview = TIANRUN_PREVIEWS.pop(token, None)
+    if not preview or preview["expires_at"] < time.time():
+        return jsonify({"ok": False, "error": "分派预览已过期，请重新预览"}), 400
+    if preview.get("mode") == "batch":
+        return jsonify({"ok": False, "error": "请使用批量分派执行入口"}), 400
+    if not TIANRUN_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "已有分派正在执行，请稍后重新预览"}), 409
+    try:
+        # Legacy entry uses the same live-queue, one-use and duplicate-write checks.
+        return execute_dispatch_preview({
+            "assignments": [{"ticket": preview["ticket"], "user": preview["user"]}],
+            "reason": preview["reason"],
+        })
+    finally:
+        TIANRUN_LOCK.release()
+
+
+@app.get("/api/tianrun/assignment/audit")
+def api_tianrun_assignment_audit():
+    denied = local_admin_only()
+    if denied:
+        return denied
+    conn = get_db()
+    rows = [dict(row) for row in conn.execute("SELECT a.*, COALESCE(t.category, '其他') AS category FROM assignment_audit a "
+                                            "LEFT JOIN tickets t ON t.ticket_id=a.ticket_id ORDER BY a.id DESC LIMIT 100")]
+    conn.close()
+    return jsonify({"ok": True, "data": rows})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="每日新增工单分析看板")
     parser.add_argument("--sync", action="store_true", help="启动前同步数据")
     parser.add_argument("--days", type=int, default=14, help="同步天数，默认14天")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default=os.environ.get("TICKET_DASHBOARD_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--no-server", action="store_true", help="只同步，不启动服务")
     args = parser.parse_args()
@@ -1483,6 +3194,7 @@ def main() -> None:
         print(result)
     if not args.no_server:
         threading.Thread(target=run_auto_sync_loop, daemon=True, name="ticket-auto-sync").start()
+        start_complaint_audit_sync()
         app.run(host=args.host, port=args.port, debug=False)
 
 
