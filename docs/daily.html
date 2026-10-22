@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script>
+    if (window.location.protocol === "file:") {
+      document.documentElement.dataset.templateFile = "true";
+    }
+  </script>
+  <style>
+    #templateFileNotice { display: none; }
+    html[data-template-file] body { margin: 0; background: #f4f6f9; font-family: system-ui, sans-serif; color: #172b4d; }
+    html[data-template-file] body > :not(#templateFileNotice) { display: none !important; }
+    html[data-template-file] #templateFileNotice { display: block; box-sizing: border-box; max-width: 560px; margin: 12vh auto; padding: 32px; background: white; border-radius: 16px; }
+    html[data-template-file] #templateFileNotice h1 { font-size: 24px; }
+    html[data-template-file] #templateFileNotice p { line-height: 1.8; color: #526079; }
+    html[data-template-file] #templateFileNotice a { display: inline-block; padding: 12px 22px; border-radius: 8px; background: #2459d3; color: white; text-decoration: none; }
+    @media (max-width: 600px) { html[data-template-file] #templateFileNotice { margin: 10vh 16px; padding: 24px; } }
+  </style>
+  <meta name="robots" content="noindex,nofollow">
+  <title>每日新增工单分析</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body class="workspace-embedded">
+  <section id="templateFileNotice" aria-label="打开工单看板">
+    <h1>请从看板入口打开</h1>
+    <p>当前打开的是页面模板，无法直接显示工单数据。点击下方按钮进入看板；如无法连接，请先运行项目中的“启动看板.command”。</p>
+    <a href="http://127.0.0.1:8090/">打开工单看板</a>
+  </section>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">FORGE · DAILY INTAKE</p>
+      <h1>每日新增工单分析</h1>
+      <p class="subtitle">公开版 · 每5分钟采集发布 · 工单详情可直接查看，源系统链接需内网访问</p>
+    </div>
+    <div class="controls">
+      <label>分析日期<input id="datePicker" type="date" value="2026-10-22"></label>
+      <label>趋势窗口<select id="windowPicker"><option value="7">近7天</option><option value="14" selected>近14天</option><option value="30">近30天</option></select></label>
+      <button id="syncBtn" type="button">同步最新数据</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="statusLine" class="status-line">正在读取数据…</div>
+
+    <section class="metric-grid" aria-label="核心指标">
+      <article class="metric primary"><span>当日新增（天润 + 商家APP）</span><strong id="totalMetric">—</strong><div id="sourceBreakdown" class="source-breakdown"><span>天润工单：—</span><span>商家APP发起：—</span></div><small id="totalCompare">—</small></article>
+      <article class="metric"><span>天润最大增长类型</span><strong id="driverMetric">—</strong><small id="driverCompare">—</small></article>
+      <article class="metric"><span>天润需关注记录</span><strong id="anomalyMetric">—</strong><small id="anomalyCompare">—</small></article>
+      <article class="metric ka"><span>KA 商家占比（天润）</span><strong id="kaMetric">—</strong><small id="kaCompare">—</small></article>
+    </section>
+
+    <section class="panel trend-panel">
+      <div class="panel-head"><div><span class="index">01</span><h2>每日新增趋势</h2></div><p>新增合计 = 天润工单 + 商家APP；纯色为天润类型，条纹为APP</p></div>
+      <div id="trendLegend" class="legend"></div>
+      <div class="trend-scroll">
+        <div id="trendChart" class="trend-chart" aria-label="每日新增工单堆叠趋势图"></div>
+      </div>
+    </section>
+
+    <section class="panel completion-panel">
+      <div class="panel-head"><div><span class="index">01A</span><h2>24小时完成率</h2></div><p>首次稽查完成时间 − 商家提单时间 ≤ 24小时；日期按天润工单创建日筛选</p></div>
+      <div id="completionSummary" class="completion-summary"></div>
+      <div id="completionCategories" class="completion-categories"></div>
+      <div id="completionQuality" class="completion-quality"></div>
+      <details class="completion-details">
+        <summary>查看逐单核验结果</summary>
+        <div class="completion-detail-toolbar">
+          <label>工单创建日期<input id="completionDatePicker" type="date" value="2026-10-22"></label>
+          <label>类别<select id="completionCategoryFilter"><option value="全部">全部类别</option><option>多付/漏付</option><option>批量核实</option><option>回访工单</option><option>介入问题</option><option>其他</option></select></label>
+          <label>结果<select id="completionResultFilter"><option value="全部">全部结果</option><option>24小时内</option><option value="未完成">未完成（未满24小时）</option><option value="超时未完成">超时未完成</option><option value="超时">已完成但超时</option><option>待核验</option></select></label>
+          <span id="completionDetailCount">选择日期查看当日完成率和逐单结果</span>
+        </div>
+        <div class="completion-table-wrap"><table class="completion-table"><thead><tr><th>工单</th><th>类别</th><th>商家提单</th><th>首次稽查完成</th><th>耗时</th><th>核验结果</th></tr></thead><tbody id="completionRecordTable"></tbody></table></div>
+        <div class="completion-detail-toolbar"><button id="completionPrev" type="button">上一页</button><span id="completionPageLabel"></span><button id="completionNext" type="button">下一页</button></div>
+      </details>
+    </section>
+
+    <section class="panel merchant-app-panel">
+      <div class="panel-head"><div><span class="index">02</span><h2>商家APP发起稽查单</h2></div><p>独立统计 APP 入口新增；超24小时清单依据当前未完成队列与创建时间核对</p></div>
+      <div id="merchantAppSummary" class="merchant-app-summary"></div>
+      <section class="merchant-overdue-section">
+        <div class="merchant-subhead"><div><h3>当前超24小时未稽查</h3><p>覆盖所有创建日期，当前未完成且状态为未稽查/待稽查；不包含稽查中的单据</p></div><strong id="merchantOverdueCount">—</strong></div>
+        <div id="merchantOverdueList" class="merchant-overdue-list"></div>
+        <details class="merchant-pending-details"><summary>查看全部当前未完成稽查单（含未满24小时）</summary><div id="merchantPendingList" class="merchant-pending-list"></div></details>
+      </section>
+      <div class="merchant-subhead merchant-records-head"><div><h3>所选日期 APP 工单明细</h3><p id="merchantRecordHint">—</p></div><div id="merchantTypeBreakdown" class="merchant-type-breakdown"></div></div>
+      <div class="merchant-table-wrap">
+        <table class="merchant-table">
+          <thead><tr><th>稽查单 / 店铺</th><th>品牌</th><th>问题描述</th><th>稽查状态</th><th>核实结果 / 类型</th><th>创建 / 完成</th><th>当前等待</th></tr></thead>
+          <tbody id="merchantRecordTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel merchant-ranking-panel">
+      <div class="panel-head"><div><span class="index">02A</span><h2>近三个月商家投诉排行</h2></div><p>按店铺 ID 合并天润工单与商家 APP 稽查单；点击商家展开逐单记录</p></div>
+      <div id="merchantRankingSummary" class="merchant-ranking-summary"></div>
+      <div id="merchantRankingCoverage" class="merchant-ranking-coverage">正在读取排行及历史覆盖情况…</div>
+      <div class="merchant-ranking-toolbar">
+        <p id="merchantRankingDefinition">—</p>
+        <label><span>搜索商家 / 店铺 ID</span><input id="merchantRankingSearch" type="search" placeholder="输入商家名称或店铺 ID"></label>
+      </div>
+      <div class="merchant-ranking-list-head" aria-hidden="true"><span>排名</span><span>商家 / 店铺 ID</span><span>总计</span><span>天润</span><span>商家 APP</span><span>近7天</span><span>最近工单</span><span></span></div>
+      <div id="merchantRankingList" class="merchant-ranking-list"><p class="empty">正在读取排行…</p></div>
+    </section>
+
+    <div class="analysis-sections">
+      <section class="panel category-analysis-panel">
+        <div class="panel-head"><div><span class="index">03</span><h2>四类工单业务分析</h2></div><p>点击类别查看今日数量、前日增减、商家主要诉求、共同点及具体风险工单</p></div>
+        <div id="categoryCards" class="category-cards"></div>
+        <div class="category-detail">
+          <div class="category-detail-head">
+            <div><span id="categoryName" class="category-name">—</span><h3 id="categoryConclusion">—</h3></div>
+            <div id="categoryMetrics" class="category-metrics"></div>
+          </div>
+          <div id="categoryCommon" class="category-common"></div>
+          <div class="category-drill-grid">
+            <section><div class="subsection-head"><h3>商家诉求分布</h3><p>每项均与前日同口径对比，可展开查看具体工单</p></div><div id="categoryDemands" class="demand-list"></div></section>
+            <section><div class="subsection-head"><h3>风险与处理卡点</h3><p>直接定位到需要优先处理的工单</p></div><div id="categoryAttention" class="category-attention"></div></section>
+          </div>
+        </div>
+      </section>
+      <section class="panel risk-radar-panel">
+        <div class="panel-head"><div><span class="index">04</span><h2>高风险雷达</h2></div><p>仅收录命中明确暴力、人身安全、舆情升级、监管举报、未成年人、食品安全、治安、现金或隐私风险的具体工单</p></div>
+        <div class="risk-radar-head"><div id="riskSummary" class="risk-summary"></div><strong id="riskCount">—</strong></div>
+        <div id="riskTicketList" class="risk-ticket-list"></div>
+      </section>
+      <section class="panel root-panel">
+        <div class="panel-head root-head">
+          <div><span class="index">05</span><h2>工单级根因台账</h2></div>
+          <p>先看现场实际发生了什么，再判断根因和责任；没有回放证据的工单统一保留为待核实</p>
+        </div>
+        <div class="root-principle">
+          <span><b>主张</b> 商家怎么描述</span><i>→</i><span><b>事实</b> 回放确认的动作</span><i>→</i><span><b>判断</b> 根因与责任方向</span><i>→</i><span><b>闭环</b> 证据缺口与下一步</span>
+        </div>
+        <div class="root-summary" id="rootSummary">
+          <div><span>证据覆盖</span><strong>—</strong><small>—</small></div>
+          <div><span>已确认异常</span><strong>—</strong><small>可进入定损/追讨</small></div>
+          <div><span>已核实无异常</span><strong>—</strong><small>不反推商家虚假</small></div>
+          <div><span>待核实</span><strong>—</strong><small>暂不判责</small></div>
+        </div>
+        <div class="root-toolbar">
+          <label class="root-search"><span>搜索</span><input id="rootSearch" type="search" placeholder="工单ID / 店铺 / 品牌 / 描述"></label>
+          <label><span>根因层级</span><select id="rootLayer"><option value="">全部层级</option><option>顾客行为</option><option>值守服务</option><option>平台系统</option><option>商家操作</option><option>流程协作</option><option>待核实</option></select></label>
+          <label><span>核实状态</span><select id="rootStatus"><option value="">全部状态</option><option>已确认异常</option><option>已核实无异常</option><option>流程事项</option><option>待核实</option></select></label>
+          <label><span>商家类型</span><select id="rootKa"><option value="">全部商家</option><option value="ka">仅KA</option><option value="non-ka">仅非KA</option></select></label>
+          <label class="check-label"><input id="rootUnresolved" type="checkbox"><span>只看待核实</span></label>
+          <button id="evidenceBtn" class="secondary-btn" type="button">更新逐单证据</button>
+        </div>
+        <div id="rootStatusLine" class="root-status-line">正在读取逐单证据…</div>
+        <div class="root-table-wrap">
+          <table class="root-table">
+            <thead><tr><th>工单 / 店铺</th><th>商家主张</th><th>现场实际行为</th><th>根因 / 责任</th><th>证据 / 缺口</th><th>损失 / 下一步</th></tr></thead>
+            <tbody id="rootTable"></tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <button id="rootPrev" class="page-btn" type="button">上一页</button>
+          <span id="rootPage">—</span>
+          <button id="rootNext" class="page-btn" type="button">下一页</button>
+        </div>
+      </section>
+      <section class="panel alert-panel">
+        <div class="panel-head"><div><span class="index">06</span><h2>运营异常雷达</h2></div><p>保留类型增长、处理时效与数据质量异常；高风险工单请查看上方独立雷达</p></div>
+        <details class="radar-details">
+          <summary>展开查看运营异常</summary>
+          <div class="radar-overview">
+            <div class="radar-block"><h3>类型增长异常</h3><div id="growthAlerts" class="growth-alerts"></div></div>
+            <div class="radar-block"><h3>处理与数据质量异常</h3><div id="anomalySummary" class="anomaly-summary"></div></div>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <div class="two-col">
+      <section class="panel">
+        <div class="panel-head"><div><span class="index">07</span><h2>工单都在描述什么</h2></div><p>按问题描述关键词归类，可点击查看原始样例</p></div>
+        <div id="topicsList" class="topic-list"></div>
+        <div id="topicSamples" class="sample-box"><p>点击一个问题主题查看工单描述样例。</p></div>
+      </section>
+    </div>
+
+    <section class="panel ka-panel">
+      <div class="panel-head"><div><span class="index">08</span><h2>KA 商家反馈明细</h2></div><p id="kaDefinition">—</p></div>
+      <div id="kaSummary" class="ka-summary"></div>
+      <div class="ka-section-head"><h3>四类工单构成</h3><p>点击类型仅查看对应的 KA 商家与工单</p></div>
+      <div id="kaCategoryFilters" class="ka-category-filters" role="tablist" aria-label="KA工单类别筛选"></div>
+      <div class="ka-section-head ka-detail-head"><h3>按商家查看具体工单</h3><p id="kaDetailHint">—</p></div>
+      <div id="kaBrandDetails" class="ka-brand-details"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><span class="index">09</span><h2>需关注工单明细</h2></div><p>仅展示命中异常规则或高风险描述的当日新增工单</p></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>工单</th><th>店铺 / 品牌</th><th>类型</th><th>问题描述</th><th>异常原因</th><th>当前状态</th></tr></thead>
+          <tbody id="anomalyTable"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>window.TICKET_PUBLIC = true;</script>
+  <script src="assets/app.js?v=b55ba65faa40"></script>
+</body>
+</html>
