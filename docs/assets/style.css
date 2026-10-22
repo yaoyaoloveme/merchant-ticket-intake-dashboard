@@ -20,9 +20,11 @@ body { margin: 0; background: var(--paper); color: var(--ink); font: 14px/1.5 -a
 .workspace-embedded { --paper: #f6f7f5; }
 .workspace-embedded .topbar { min-height: 0; padding: 22px 24px 18px; background: var(--paper); color: var(--ink); align-items: flex-start; overflow: visible; }
 .workspace-embedded .topbar::after { display: none; }
+.workspace-embedded .topbar > div:first-child { display: none; }
 .workspace-embedded .eyebrow,.workspace-embedded .subtitle { display: none; }
 .workspace-embedded h1 { font-size: 25px; letter-spacing: -.025em; }
-.workspace-embedded .controls { align-items: flex-start; }
+.workspace-embedded .topbar { justify-content: flex-start; }
+.workspace-embedded .controls { align-items: flex-start; justify-content: flex-start; }
 .workspace-embedded .controls label { color: var(--muted); }
 .workspace-embedded .controls input,.workspace-embedded .controls select { border-color: #d8dedb; background: #fff; color: var(--ink); color-scheme: light; }
 .workspace-embedded .header-link { display: none; }
