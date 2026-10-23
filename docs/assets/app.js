@@ -22,10 +22,25 @@ let publicLoadedRevision = null;
 let publicRequest = 0;
 let publicVersionCheckRunning = false;
 let publicReloading = false;
+let activeDailyTab = 'overview';
 const publicPageOpenedAt = Date.now();
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+
+function showDailyTab(name) {
+  const selected = ['overview', 'timeliness', 'risk', 'merchant'].includes(name) ? name : 'overview';
+  activeDailyTab = selected;
+  document.querySelectorAll('[data-daily-tab]').forEach(button => {
+    const active = button.dataset.dailyTab === selected;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-daily-panel]').forEach(panel => {
+    panel.hidden = panel.dataset.dailyPanel !== selected;
+  });
+  if (selected === 'timeliness' && dashboardData) loadCompletionDay();
+}
 
 async function loadDashboard() {
   if (isPublicDashboard) return loadPublicDashboard();
@@ -425,6 +440,10 @@ $('completionPrev').addEventListener('click', () => { if (completionPage > 1) { 
 $('completionNext').addEventListener('click', () => { if (completionPage < completionPages) { completionPage++; renderCompletionRecords(); } });
 document.querySelector('.completion-details').addEventListener('toggle', event => { if (event.currentTarget.open) renderCompletionRecords(); });
 $('syncBtn').addEventListener('click', syncData);
+document.querySelectorAll('[data-daily-tab]').forEach(button => button.addEventListener('click', () => {
+  showDailyTab(button.dataset.dailyTab);
+  window.scrollTo({top: document.querySelector('.daily-tabs').offsetTop - 12, behavior: 'smooth'});
+}));
 async function fetchPublicJson(path) {
   const response = await fetch(`${path}?v=${Date.now()}`, {cache: 'no-store'});
   if (!response.ok) throw new Error(`数据读取失败（${response.status}）`);
@@ -477,6 +496,7 @@ async function loadPublicDashboard(manifest) {
 if (isPublicDashboard) {
   $('syncBtn').textContent = '刷新公开数据';
 }
+showDailyTab(activeDailyTab);
 loadDashboard();
 if (isPublicDashboard) {
   const schedulePublicVersionCheck = () => {
