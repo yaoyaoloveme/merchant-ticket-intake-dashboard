@@ -160,6 +160,7 @@ function render(data, sync, realtime) {
   const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
   $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
   renderTrend(data.daily_trend);
+  renderShoppingBagUnderpayment(data.shopping_bag_underpayment);
   completionRecordsCache = null;
   completionPage = 1;
   if (!completionDateChanged) $('completionDatePicker').value = data.selected_date;
@@ -297,6 +298,33 @@ function renderTrend(days) {
     const sourceTitle = `天润 ${day.tianrun_count} 单 · 商家APP ${day.merchant_app_count} 单`;
     return `<div class="day-bar"><span class="bar-value">${day.total}</span><div class="bar-stack" style="--height:${day.total / max * 215}px" title="${day.date}：${day.total}单（${sourceTitle}）">${segments}</div><span class="day-label">${day.label}</span></div>`;
   }).join('');
+}
+
+function renderShoppingBagUnderpayment(data) {
+  data = data || {};
+  const count = Number(data.count || 0);
+  const previous = Number(data.previous || 0);
+  const delta = Number(data.delta || 0);
+  const daily = data.daily || [];
+  const records = data.records || [];
+  $('shoppingBagSummary').innerHTML = `<div class="shopping-bag-main"><span>所选日期反馈</span><strong>${count.toLocaleString()}</strong><small>按工单ID去重</small></div>
+    <div><span>前一日</span><strong>${previous.toLocaleString()}</strong><small class="${signClass(delta)}">变化 ${signed(delta)} 单</small></div>
+    <div><span>前7日均值</span><strong>${Number(data.avg7 || 0).toLocaleString()}</strong><small>不含所选日期</small></div>`;
+  const max = Math.max(1, ...daily.map(day => Number(day.count || 0)));
+  $('shoppingBagChart').style.setProperty('--bag-days', daily.length || 1);
+  $('shoppingBagChart').style.minWidth = `${Math.max(560, daily.length * 52)}px`;
+  $('shoppingBagChart').innerHTML = daily.map(day => {
+    const value = Number(day.count || 0);
+    const height = value ? Math.max(8, value / max * 108) : 2;
+    return `<div class="shopping-bag-day" title="${escapeHtml(day.date)}：${value} 单"><span>${value}</span><i style="height:${height}px"></i><small>${escapeHtml(day.label)}</small></div>`;
+  }).join('');
+  $('shoppingBagDefinition').textContent = data.definition || '';
+  $('shoppingBagDetailSummary').textContent = `查看所选日期命中工单（${records.length} 单）`;
+  $('shoppingBagRecords').innerHTML = records.length ? records.map(row => `<article class="shopping-bag-record">
+    <div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a><span>店铺 ${escapeHtml(row.shop_id || '—')} · ${escapeHtml(row.brand)}</span><b>${escapeHtml(row.status)}</b></div>
+    <p>${escapeHtml(row.description)}</p>
+    <small>${escapeHtml(row.created_at)} · ${escapeHtml(row.category)}${row.is_ka ? ' · KA' : ''}</small>
+  </article>`).join('') : '<p class="empty">所选日期没有命中购物袋漏付口径的工单。</p>';
 }
 
 function renderMerchantApp(app) {
