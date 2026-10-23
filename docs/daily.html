@@ -51,14 +51,7 @@
       <article class="metric ka"><span>KA 商家占比（天润）</span><strong id="kaMetric">—</strong><small id="kaCompare">—</small></article>
     </section>
 
-    <nav class="daily-tabs" aria-label="每日新增分析分类" role="tablist">
-      <button class="active" data-daily-tab="overview" type="button" role="tab" aria-selected="true">概览</button>
-      <button data-daily-tab="timeliness" type="button" role="tab" aria-selected="false">时效</button>
-      <button data-daily-tab="risk" type="button" role="tab" aria-selected="false">风险</button>
-      <button data-daily-tab="merchant" type="button" role="tab" aria-selected="false">商家明细</button>
-    </nav>
-
-    <section class="panel trend-panel" data-daily-panel="overview">
+    <section class="panel trend-panel">
       <div class="panel-head"><div><span class="index">01</span><h2>每日新增趋势</h2></div><p>新增合计 = 天润工单 + 商家APP；纯色为天润类型，条纹为APP</p></div>
       <div id="trendLegend" class="legend"></div>
       <div class="trend-scroll">
@@ -66,7 +59,7 @@
       </div>
     </section>
 
-    <section class="panel shopping-bag-panel" data-daily-panel="overview">
+    <section class="panel shopping-bag-panel">
       <div class="panel-head"><div><span class="index">01A</span><h2>购物袋相关反馈</h2></div><p>只要天润工单描述中出现“购物袋”，即统一纳入每日统计</p></div>
       <div id="shoppingBagSummary" class="shopping-bag-summary"></div>
       <div class="shopping-bag-chart-wrap">
@@ -79,7 +72,7 @@
       </details>
     </section>
 
-    <section class="panel completion-panel" data-daily-panel="timeliness" hidden>
+    <section class="panel completion-panel">
       <div class="panel-head"><div><span class="index">01B</span><h2>24小时完成率</h2></div><p>首次稽查完成时间 − 商家提单时间 ≤ 24小时；日期按天润工单创建日筛选</p></div>
       <div id="completionSummary" class="completion-summary"></div>
       <div id="completionCategories" class="completion-categories"></div>
@@ -97,7 +90,7 @@
       </details>
     </section>
 
-    <section class="panel merchant-app-panel" data-daily-panel="merchant" hidden>
+    <section class="panel merchant-app-panel">
       <div class="panel-head"><div><span class="index">02</span><h2>商家APP发起稽查单</h2></div><p>独立统计 APP 入口新增；超24小时清单依据当前未完成队列与创建时间核对</p></div>
       <div id="merchantAppSummary" class="merchant-app-summary"></div>
       <section class="merchant-overdue-section">
@@ -114,7 +107,7 @@
       </div>
     </section>
 
-    <div class="analysis-sections" data-daily-panel="overview">
+    <div class="analysis-sections">
       <section class="panel category-analysis-panel">
         <div class="panel-head"><div><span class="index">03</span><h2>四类工单业务分析</h2></div><p>点击类别查看今日数量、前日增减、商家主要诉求、共同点及具体风险工单</p></div>
         <div id="categoryCards" class="category-cards"></div>
@@ -130,9 +123,6 @@
           </div>
         </div>
       </section>
-    </div>
-
-    <div class="analysis-sections" data-daily-panel="risk" hidden>
       <section class="panel risk-radar-panel">
         <div class="panel-head"><div><span class="index">04</span><h2>高风险雷达</h2></div><p>仅收录命中明确暴力、人身安全、舆情升级、监管举报、未成年人、食品安全、治安、现金或隐私风险的具体工单</p></div>
         <div class="risk-radar-head"><div id="riskSummary" class="risk-summary"></div><strong id="riskCount">—</strong></div>
@@ -150,7 +140,7 @@
       </section>
     </div>
 
-    <div class="two-col" data-daily-panel="overview">
+    <div class="two-col">
       <section class="panel">
         <div class="panel-head"><div><span class="index">06</span><h2>工单都在描述什么</h2></div><p>按问题描述关键词归类，可点击查看原始样例</p></div>
         <div id="topicsList" class="topic-list"></div>
@@ -158,7 +148,7 @@
       </section>
     </div>
 
-    <section class="panel ka-panel" data-daily-panel="merchant" hidden>
+    <section class="panel ka-panel">
       <div class="panel-head"><div><span class="index">07</span><h2>KA 商家反馈明细</h2></div><p id="kaDefinition">—</p></div>
       <div id="kaSummary" class="ka-summary"></div>
       <div class="ka-section-head"><h3>四类工单构成</h3><p>点击类型仅查看对应的 KA 商家与工单</p></div>
@@ -167,7 +157,7 @@
       <div id="kaBrandDetails" class="ka-brand-details"></div>
     </section>
 
-    <section class="panel" data-daily-panel="risk" hidden>
+    <section class="panel">
       <div class="panel-head"><div><span class="index">08</span><h2>需关注工单明细</h2></div><p>仅展示命中异常规则或高风险描述的当日新增工单</p></div>
       <div class="table-wrap">
         <table>
@@ -179,6 +169,6 @@
   </main>
 
   <script>window.TICKET_PUBLIC = true;</script>
-  <script src="assets/app.js?v=be7e879a86f9"></script>
+  <script src="assets/app.js?v=9b0677297231"></script>
 </body>
 </html>
