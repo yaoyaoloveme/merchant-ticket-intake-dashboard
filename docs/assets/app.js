@@ -5,14 +5,8 @@ const colors = {
   '回访工单': '#d9a11e', '其他': '#7968a8'
 };
 let dashboardData = null;
-let rootPage = 1;
-let rootPages = 1;
-let rootSearchTimer = null;
 let selectedCategoryIndex = 0;
 let selectedKaCategory = '全部';
-let merchantRankingData = null;
-let merchantRankingRevision = null;
-let merchantRankingRequest = 0;
 let completionRecordsCache = null;
 let completionDayRequest = 0;
 let completionDateChanged = false;
@@ -45,98 +39,10 @@ async function loadDashboard() {
     if (!result.ok) throw new Error(result.error || '读取失败');
     dashboardData = result.data;
     render(result.data, result.sync, result.realtime);
-    rootPage = 1;
-    loadRootCauses();
   } catch (error) {
     $('statusLine').className = 'status-line error';
     $('statusLine').textContent = error.message;
   }
-}
-
-async function loadMerchantRanking() {
-  const requestId = ++merchantRankingRequest;
-  const list = $('merchantRankingList');
-  try {
-    let data;
-    if (isPublicDashboard) {
-      if (!merchantRankingData || merchantRankingRevision !== publicLoadedRevision) {
-        data = await fetchPublicJson('data/merchant-ranking.json');
-      } else {
-        data = merchantRankingData;
-      }
-    } else {
-      const response = await fetch('/api/merchant-ranking');
-      const result = await response.json();
-      if (!result.ok) throw new Error(result.error || '读取商家排行失败');
-      data = result.data;
-    }
-    if (requestId !== merchantRankingRequest) return;
-    merchantRankingData = data;
-    merchantRankingRevision = publicLoadedRevision;
-    renderMerchantRanking(data);
-  } catch (error) {
-    if (requestId !== merchantRankingRequest) return;
-    $('merchantRankingCoverage').className = 'merchant-ranking-coverage uncertain';
-    $('merchantRankingCoverage').textContent = error.message;
-    if (!merchantRankingData) list.innerHTML = '<p class="empty">排行数据暂时无法读取</p>';
-  }
-}
-
-function rootQuery() {
-  const pageSize = window.innerWidth <= 620 ? 10 : 25;
-  const params = new URLSearchParams({date: $('datePicker').value, page: rootPage, page_size: pageSize});
-  const values = {
-    q: $('rootSearch').value.trim(), layer: $('rootLayer').value,
-    status: $('rootStatus').value, ka: $('rootKa').value
-  };
-  Object.entries(values).forEach(([key,value]) => { if (value) params.set(key,value); });
-  if ($('rootUnresolved').checked) params.set('unresolved','1');
-  return params;
-}
-
-async function loadRootCauses() {
-  if (isPublicDashboard) return loadPublicRootCauses();
-  $('rootStatusLine').className = 'root-status-line';
-  $('rootStatusLine').textContent = '正在读取逐单根因和稽查证据…';
-  try {
-    const response = await fetch(`/api/root-causes?${rootQuery().toString()}`);
-    const result = await response.json();
-    if (!result.ok) throw new Error(result.error || '逐单根因读取失败');
-    renderRootCauses(result.data, result.evidence_sync);
-  } catch (error) {
-    $('rootStatusLine').className = 'root-status-line error';
-    $('rootStatusLine').textContent = error.message;
-    $('rootTable').innerHTML = '<tr><td colspan="6" class="empty">逐单根因暂时无法读取</td></tr>';
-  }
-}
-
-function statusTone(status) {
-  if (status === '已确认异常') return 'danger';
-  if (status === '已核实无异常') return 'success';
-  if (status === '流程事项') return 'info';
-  return 'pending';
-}
-
-function renderRootCauses(data, evidenceSync) {
-  rootPage = data.page; rootPages = data.pages;
-  const statusMap = Object.fromEntries(data.statuses.map(x => [x.name,x.count]));
-  $('rootSummary').innerHTML = `<div><span>证据覆盖</span><strong>${data.evidence_ratio}%</strong><small>${data.evidence_ready} / ${data.total} 单</small></div>
-    <div><span>已确认异常</span><strong>${statusMap['已确认异常']||0}</strong><small>需继续看是否成损</small></div>
-    <div><span>已核实无异常</span><strong>${statusMap['已核实无异常']||0}</strong><small>回放暂未发现异常</small></div>
-    <div><span>待核实</span><strong>${statusMap['待核实']||0}</strong><small>缺证据，暂不判责</small></div>`;
-  const syncText = evidenceSync?.running ? evidenceSync.message : `共 ${data.total} 单，当前筛选 ${data.filtered_total} 单`;
-  $('rootStatusLine').textContent = `${syncText} · A为有文字结论，B为仅有状态，C为仅有商家描述`;
-  $('rootTable').innerHTML = data.records.length ? data.records.map(r => `<tr>
-    <td class="identity-cell" data-label="工单 / 店铺"><a class="ticket-link" href="${escapeHtml(r.source_url)}" target="_blank" rel="noopener">${escapeHtml(r.ticket_id)}</a><span>${escapeHtml(r.shop_id)}</span><small>${escapeHtml(r.brand)}</small><small>${escapeHtml(r.created_at.slice(11,16))} · ${r.is_ka?'KA':'非KA'}</small></td>
-    <td data-label="商家主张"><p class="cell-copy claim-copy">${escapeHtml(r.merchant_claim)}</p><span class="category-tag">${escapeHtml(r.category)}</span></td>
-    <td data-label="现场实际行为"><span class="status-badge ${statusTone(r.verification_status)}">${escapeHtml(r.verification_status)}</span><p class="cell-copy behavior-copy">${escapeHtml(r.customer_behavior)}</p></td>
-    <td data-label="根因 / 责任"><div class="layer-tag">${escapeHtml(r.root_layer)}</div><strong class="root-cause">${escapeHtml(r.root_cause)}</strong><p class="cell-note">${escapeHtml(r.responsibility)}</p></td>
-    <td data-label="证据 / 缺口"><div class="evidence-line"><b>${escapeHtml(r.evidence_grade)}</b><span>${r.confidence}%</span></div><p class="cell-note evidence-summary">${escapeHtml(r.evidence_summary)}</p><div class="gap-list">${r.evidence_gap.map(g => `<span>${escapeHtml(g)}</span>`).join('')}</div></td>
-    <td data-label="损失 / 下一步"><div class="loss-state">${escapeHtml(r.loss_status)}</div><p class="cell-note">${escapeHtml(r.loss_summary)}</p><p class="pipeline-note">流程：${escapeHtml(r.pipeline_status)}</p><div class="next-action"><b>下一步</b>${escapeHtml(r.next_action)}</div></td>
-  </tr>`).join('') : '<tr><td colspan="6" class="empty">当前筛选条件下没有工单</td></tr>';
-  $('rootPage').textContent = `第 ${data.page} / ${data.pages} 页 · ${data.filtered_total} 单`;
-  $('rootPrev').disabled = data.page <= 1;
-  $('rootNext').disabled = data.page >= data.pages;
 }
 
 function render(data, sync, realtime) {
@@ -166,37 +72,11 @@ function render(data, sync, realtime) {
   if (!completionDateChanged) $('completionDatePicker').value = data.selected_date;
   loadCompletionDay();
   renderMerchantApp(data.merchant_app);
-  loadMerchantRanking();
   renderCategoryInsights(data.category_insights);
   renderAlerts(data.growth_anomalies, data.risk_summary, data.risk_records, data.operational_anomaly_summary, data.merchant_app?.risk_records || []);
   renderTopics(data.topics);
   renderKA(data.ka);
   renderAnomalyTable(data.anomaly_records);
-}
-
-function renderMerchantRanking(data) {
-  const coverage = data.coverage || {};
-  const complete = coverage.complete;
-  const rankRows = data.ranking || [];
-  const search = $('merchantRankingSearch').value.trim().toLowerCase();
-  const visibleRows = rankRows.filter(row => `${row.brand} ${row.shop_id}`.toLowerCase().includes(search));
-  const summary = $('merchantRankingSummary');
-  summary.innerHTML = `<div><span>纳入排行商家</span><strong>${Number(data.merchant_count || 0).toLocaleString()}</strong><small>${data.period_start} 至 ${data.period_end}</small></div>
-    <div><span>可归集天润</span><strong>${Number(data.tianrun_count || 0).toLocaleString()}</strong><small>按天润工单 ID 计数</small></div>
-    <div><span>可归集商家 APP</span><strong>${Number(data.merchant_app_count || 0).toLocaleString()}</strong><small>按 APP 稽查单 ID 计数</small></div>
-    <div><span>可归集合计</span><strong>${Number(data.total_count || 0).toLocaleString()}</strong><small>跨入口不去重</small></div>`;
-  const coverageText = complete
-    ? `已完成双来源逐日查询 90 / 90 天 · ${data.period_start} 至 ${data.period_end}，截止日持续更新；统计范围为源看板可查记录。`
-    : `数据覆盖不足：已确认双来源 ${coverage.fully_synced_days || 0} / 90 天，连续覆盖最近 ${coverage.contiguous_days_to_end || 0} 天；首个未确认日期 ${coverage.first_missing_date || '—'}。未同步日期的“0单”不作为已核实数据。`;
-  $('merchantRankingCoverage').className = `merchant-ranking-coverage ${complete ? 'complete' : 'uncertain'}`;
-  $('merchantRankingCoverage').textContent = coverageText;
-  $('merchantRankingDefinition').textContent = `${data.definition} 无店铺ID未匹配：天润 ${data.unmatched_tianrun_count || 0} 单，APP ${data.unmatched_merchant_app_count || 0} 单。当前显示前 ${rankRows.length} 名，搜索仅在本榜内。`;
-  const openShops = new Set([...$('merchantRankingList').querySelectorAll('details[open]')].map(row => row.dataset.shopId));
-  $('merchantRankingList').innerHTML = visibleRows.length ? visibleRows.map(row => `<details class="merchant-rank-row" data-shop-id="${escapeHtml(row.shop_id)}" ${openShops.has(String(row.shop_id)) ? 'open' : ''}>
-    <summary><span class="merchant-rank-number">${row.rank}</span><span class="merchant-rank-identity"><strong>${escapeHtml(row.brand || '未匹配品牌')}</strong><small>店铺 ID ${escapeHtml(row.shop_id)}${row.is_ka ? ' · KA' : ''}</small></span>
-    <strong class="merchant-rank-total">${row.total}</strong><span class="merchant-rank-tianrun">${row.tianrun_count}</span><span class="merchant-rank-app">${row.merchant_app_count}</span><span class="merchant-rank-week">${row.last_7_count}</span><span class="merchant-rank-date">${escapeHtml(row.last_ticket_at || '—')}</span><span class="merchant-rank-toggle" aria-hidden="true"></span></summary>
-    <div class="merchant-rank-tickets">${row.tickets.map(ticket => `<article class="merchant-rank-ticket"><div><a href="${escapeHtml(ticket.source_url)}" target="_blank" rel="noopener">${escapeHtml(ticket.source_label)} ${escapeHtml(ticket.ticket_id)}</a><span>${escapeHtml(ticket.category)}</span></div><p>${escapeHtml(ticket.description) || '未填写问题描述'}</p><small>${escapeHtml(ticket.created_at)} · ${escapeHtml(ticket.status)}</small></article>`).join('')}</div>
-  </details>`).join('') : '<p class="empty">没有匹配的商家；如果结果为空，请检查所选日期范围内数据是否已同步。</p>';
 }
 
 function renderCompletionRate(rate) {
@@ -537,28 +417,6 @@ async function syncData() {
   }
 }
 
-async function syncEvidence() {
-  if (isPublicDashboard) return loadRootCauses();
-  const button = $('evidenceBtn');
-  button.disabled = true; button.textContent = '正在更新证据…';
-  try {
-    const response = await fetch('/api/evidence/sync', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:$('datePicker').value})});
-    const result = await response.json();
-    if (!result.ok) throw new Error(result.error || '启动逐单证据同步失败');
-    const timer = setInterval(async () => {
-      const status = await (await fetch('/api/evidence/status')).json();
-      $('rootStatusLine').textContent = status.sync.message;
-      if (!status.sync.running) {
-        clearInterval(timer); button.disabled = false; button.textContent = '更新逐单证据'; loadRootCauses();
-      }
-    }, 1000);
-  } catch (error) {
-    button.disabled = false; button.textContent = '更新逐单证据';
-    $('rootStatusLine').className = 'root-status-line error'; $('rootStatusLine').textContent = error.message;
-  }
-}
-
-
 $('datePicker').addEventListener('change', () => { followsLatestDate = false; loadDashboard(); });
 $('windowPicker').addEventListener('change', loadDashboard);
 $('completionDatePicker').addEventListener('change', () => { completionDateChanged = true; completionPage = 1; loadCompletionDay(); });
@@ -566,13 +424,7 @@ $('completionDatePicker').addEventListener('change', () => { completionDateChang
 $('completionPrev').addEventListener('click', () => { if (completionPage > 1) { completionPage--; renderCompletionRecords(); } });
 $('completionNext').addEventListener('click', () => { if (completionPage < completionPages) { completionPage++; renderCompletionRecords(); } });
 document.querySelector('.completion-details').addEventListener('toggle', event => { if (event.currentTarget.open) renderCompletionRecords(); });
-$('merchantRankingSearch').addEventListener('input', () => { if (merchantRankingData) renderMerchantRanking(merchantRankingData); });
 $('syncBtn').addEventListener('click', syncData);
-$('evidenceBtn').addEventListener('click', syncEvidence);
-['rootLayer','rootStatus','rootKa','rootUnresolved'].forEach(id => $(id).addEventListener('change', () => { rootPage=1; loadRootCauses(); }));
-$('rootSearch').addEventListener('input', () => { clearTimeout(rootSearchTimer); rootSearchTimer=setTimeout(() => { rootPage=1; loadRootCauses(); },300); });
-$('rootPrev').addEventListener('click', () => { if (rootPage>1) { rootPage--; loadRootCauses(); $('rootStatusLine').scrollIntoView({behavior:'smooth',block:'center'}); } });
-$('rootNext').addEventListener('click', () => { if (rootPage<rootPages) { rootPage++; loadRootCauses(); $('rootStatusLine').scrollIntoView({behavior:'smooth',block:'center'}); } });
 async function fetchPublicJson(path) {
   const response = await fetch(`${path}?v=${Date.now()}`, {cache: 'no-store'});
   if (!response.ok) throw new Error(`数据读取失败（${response.status}）`);
@@ -613,8 +465,6 @@ async function loadPublicDashboard(manifest) {
     dashboardData = {...snapshot.dashboard, daily_trend: snapshot.dashboard.daily_trend.slice(-windowSize)};
     render(dashboardData, null, null);
     updatePublicStatus();
-    rootPage = 1;
-    loadPublicRootCauses();
   } catch (error) {
     if (requestId !== publicRequest) return;
     $('statusLine').className = 'status-line error';
@@ -624,30 +474,8 @@ async function loadPublicDashboard(manifest) {
   }
 }
 
-function loadPublicRootCauses() {
-  if (!publicSnapshot) return;
-  const ledger = publicSnapshot.ledger;
-  const params = rootQuery();
-  const keyword = (params.get('q') || '').toLowerCase();
-  const filtered = ledger.records.filter(record => {
-    const text = ['ticket_id','shop_id','brand','merchant_claim','customer_behavior','root_cause'].map(key => record[key] || '').join(' ').toLowerCase();
-    return (!keyword || text.includes(keyword)) &&
-      (!params.get('layer') || record.root_layer === params.get('layer')) &&
-      (!params.get('status') || record.verification_status === params.get('status')) &&
-      (params.get('ka') !== 'ka' || record.is_ka) &&
-      (params.get('ka') !== 'non-ka' || !record.is_ka) &&
-      (!params.get('unresolved') || record.verification_status === '待核实');
-  });
-  const pageSize = Number(params.get('page_size'));
-  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  rootPage = Math.min(rootPage, pages);
-  renderRootCauses({...ledger, filtered_total: filtered.length, page: rootPage, pages,
-    records: filtered.slice((rootPage - 1) * pageSize, rootPage * pageSize)}, null);
-}
-
 if (isPublicDashboard) {
   $('syncBtn').textContent = '刷新公开数据';
-  $('evidenceBtn').hidden = true;
 }
 loadDashboard();
 if (isPublicDashboard) {
