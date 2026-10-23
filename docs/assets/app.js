@@ -324,7 +324,7 @@ function renderShoppingBagUnderpayment(data) {
     <div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.ticket_id)}</a><span>店铺 ${escapeHtml(row.shop_id || '—')} · ${escapeHtml(row.brand)}</span><b>${escapeHtml(row.status)}</b></div>
     <p>${escapeHtml(row.description)}</p>
     <small>${escapeHtml(row.created_at)} · ${escapeHtml(row.category)}${row.is_ka ? ' · KA' : ''}</small>
-  </article>`).join('') : '<p class="empty">所选日期没有命中购物袋漏付口径的工单。</p>';
+  </article>`).join('') : '<p class="empty">所选日期没有描述中包含“购物袋”的工单。</p>';
 }
 
 function renderMerchantApp(app) {
