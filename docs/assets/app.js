@@ -217,7 +217,7 @@ function renderMerchantApp(app) {
   $('merchantAppSummary').innerHTML = `<div class="merchant-app-kpis">
     <div><span>所选日期新增</span><strong>${Number(app.count || 0).toLocaleString()}</strong><small>前日 ${Number(app.previous || 0).toLocaleString()} · <b class="${signClass(app.delta || 0)}">${signed(app.delta || 0)}</b></small></div>
     <div><span>当前未完成</span><strong>${Number(app.current_pending_count || 0).toLocaleString()}</strong><small>不受所选分析日期限制</small></div>
-    <div class="${app.overdue_24h_count ? 'is-overdue' : ''}"><span>超24小时仍未稽查</span><strong>${Number(app.overdue_24h_count || 0).toLocaleString()}</strong><small>只统计当前未完成且状态未稽查</small></div>
+    <div class="${app.overdue_24h_count ? 'is-overdue' : ''}"><span>超24小时未完成稽查</span><strong>${Number(app.overdue_24h_count || 0).toLocaleString()}</strong><small>商家APP发起、当前未完成且创建已满24小时</small></div>
     <div><span>所选日期数据同步</span><strong class="sync-time">${escapeHtml(syncedAt)}</strong><small>${app.loaded ? 'APP新增明细已读取' : '该日期尚未确认完成同步'}</small></div>
   </div>
   <div class="merchant-sync-note ${queueStale ? 'stale' : 'fresh'}"><b>${queueStale ? '需核实队列时效' : '未完成队列同步正常'}</b><span>${escapeHtml(queueStatus)}</span><small>新增量按入口计数，同一事项若同时进入天润与APP会分别计数；超时从APP创建时间起算。</small></div>`;
@@ -228,7 +228,7 @@ function renderMerchantApp(app) {
     <div class="merchant-overdue-ticket-head"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">稽查单 ${escapeHtml(row.inspection_id)}</a><span>事件 ${escapeHtml(row.event_id)} · 店铺 ${escapeHtml(row.shop_id)}</span></div><strong>${escapeHtml(row.age_hours ?? '—')} 小时</strong></div>
     <p>${escapeHtml(row.description)}</p><div class="merchant-ticket-meta"><span>${escapeHtml(row.brand)}</span><span>${escapeHtml(row.inspect_status)}</span><span>创建 ${escapeHtml(row.created_at)}</span>${row.risk_hits?.map(hit => `<b class="risk-tag">${escapeHtml(hit.label)}</b>`).join('') || ''}</div>
   </article>`).join('') : app.open_synced_at && !queueStale
-    ? '<div class="merchant-overdue-empty"><strong>0 单</strong><span>本次已同步的当前未完成队列中，没有创建满24小时且仍未稽查的商家APP稽查单。</span></div>'
+    ? '<div class="merchant-overdue-empty"><strong>0 单</strong><span>本次已同步的当前未完成队列中，没有创建满24小时且仍未完成稽查的商家APP稽查单。</span></div>'
     : '<div class="merchant-overdue-empty uncertain"><strong>暂不能确认</strong><span>当前未完成队列同步缺失或已超过15分钟，不能据此判断超24小时工单为0。</span></div>';
 
   $('merchantPendingList').innerHTML = (app.pending_records || []).length ? app.pending_records.map(row => `<article class="merchant-pending-ticket"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">稽查单 ${escapeHtml(row.inspection_id)}</a><strong class="${row.overdue_24h ? 'overdue-label' : ''}">${escapeHtml(row.age_hours ?? '—')} 小时 · ${escapeHtml(row.inspect_status)}</strong></div><p>${escapeHtml(row.description)}</p><small>店铺 ${escapeHtml(row.shop_id)} · ${escapeHtml(row.brand)} · 创建 ${escapeHtml(row.created_at)}</small></article>`).join('') : '<p class="empty">本次队列没有未完成单据；请结合上方同步状态核实。</p>';
