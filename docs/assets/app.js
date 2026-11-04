@@ -221,6 +221,27 @@ function renderFeedbackAnalysis(data) {
     <div><span>疑似重复待复核</span><strong>${suspected.toLocaleString()}</strong><small>不纳入正式重复率</small></div>
     <div><span>反馈高峰</span><strong class="feedback-period">${escapeHtml(selected.peak_period || '—')}</strong><small>${peakCount} 单，占当日 ${total ? (peakCount * 100 / total).toFixed(1) : '0.0'}%</small></div>`;
 
+  const daily = data.daily || [];
+  const dailyMax = Math.max(1, ...daily.flatMap(item => [Number(item.confirmed_repeat_count || 0), Number(item.suspected_repeat_count || 0)]));
+  $('feedbackDailyChart').style.setProperty('--feedback-days', daily.length || 1);
+  $('feedbackDailyChart').style.minWidth = `${Math.max(380, daily.length * 44)}px`;
+  $('feedbackDailyChart').innerHTML = daily.map(item => {
+    const count = Number(item.confirmed_repeat_count || 0);
+    const suspectedCount = Number(item.suspected_repeat_count || 0);
+    const title = `${item.date}：确认 ${count} 次，疑似 ${suspectedCount} 次；新增 ${item.total} 单；高峰 ${item.peak_period || '暂无'} ${item.peak_count || 0} 单`;
+    return `<button type="button" class="feedback-day ${item.date === data.end_date ? 'selected' : ''}" data-date="${escapeHtml(item.date)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}，点击查看当日"><span>${count}<small> / ${suspectedCount}</small></span><div class="feedback-day-bars"><i style="height:${Math.max(2, count / dailyMax * 96)}px"></i><i class="suspected" style="height:${Math.max(2, suspectedCount / dailyMax * 96)}px"></i></div><small>${escapeHtml(item.date.slice(5))}</small></button>`;
+  }).join('');
+  $('feedbackDailyChart').querySelectorAll('button[data-date]').forEach(button => button.addEventListener('click', () => {
+    followsLatestDate = false;
+    $('datePicker').value = button.dataset.date;
+    loadDashboard();
+  }));
+  $('feedbackTrendScope').textContent = `${data.start_date || '—'} 至 ${data.end_date || '—'}；历史日按全天，所选日${data.cutoff_time ? `截至 ${data.cutoff_time}` : '按全天'}。疑似不计入重复率。`;
+  const selectedWeek = data.selected_week || {};
+  $('feedbackWeekSummary').innerHTML = selectedWeek.week_start ? `<span>所选日期所在周 · ${escapeHtml(selectedWeek.start_date)} 至 ${escapeHtml(selectedWeek.end_date)}</span><strong>确认 ${Number(selectedWeek.confirmed_repeat_count || 0)} 次 <small>疑似 ${Number(selectedWeek.suspected_repeat_count || 0)} 次</small></strong><span>重复率 ${Number(selectedWeek.repeat_rate || 0).toFixed(1)}% · ${selectedWeek.full_week ? '整周' : `截至所选日${selectedWeek.cutoff_time ? ` ${escapeHtml(selectedWeek.cutoff_time)}` : ''}`}</span>` : '';
+  const weeks = (data.weeks || []).slice().reverse();
+  $('feedbackWeekList').innerHTML = weeks.length ? `<table><thead><tr><th>统计范围</th><th>确认</th><th>疑似</th><th>重复率</th></tr></thead><tbody>${weeks.map(item => `<tr><td>${escapeHtml(item.start_date.slice(5))}—${escapeHtml(item.end_date.slice(5))}<small>${item.full_week ? '整周' : '部分周'}</small></td><td>${Number(item.confirmed_repeat_count || 0)}</td><td>${Number(item.suspected_repeat_count || 0)}</td><td>${Number(item.repeat_rate || 0).toFixed(1)}%</td></tr>`).join('')}</tbody></table>` : '<p class="empty">暂无周统计</p>';
+
   const hours = data.two_hour || [];
   const max = Math.max(1, ...hours.map(item => Number(item.total || 0)));
   $('feedbackPeakChart').innerHTML = hours.map(item => {
@@ -239,11 +260,11 @@ function renderFeedbackAnalysis(data) {
   $('feedbackSourceList').innerHTML = sourceRows.length ? `<div class="feedback-source-title">来源分布</div>${sourceRows.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.source || item.source_label || '未分类')}</span><i><b style="width:${Number(item.count || 0) / sourceMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('')}` : '';
   const reasons = Array.isArray(selected.reason_breakdown) ? selected.reason_breakdown : (data.reason_breakdown || []);
   const reasonMax = Math.max(1, ...reasons.map(item => Number(item.count || 0)));
-  $('feedbackReasonList').innerHTML = reasons.length ? reasons.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.reason)}</span><i><b style="width:${Number(item.count || 0) / reasonMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('') : '<p class="empty">当前趋势窗口内没有规则确认的再次反馈。</p>';
+  $('feedbackReasonList').innerHTML = reasons.length ? reasons.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.reason)}</span><i><b style="width:${Number(item.count || 0) / reasonMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('') : '<p class="empty">所选日期没有规则确认的再次反馈。</p>';
   $('feedbackDefinition').textContent = data.definition || '';
   const records = data.records || [];
-  $('feedbackDetailSummary').textContent = `查看所选日期重复/关联反馈（确认 ${confirmed} · 疑似 ${suspected}）`;
-  $('feedbackRecords').innerHTML = records.length ? records.map(row => `<article class="feedback-record ${row.confidence === '规则确认' ? 'confirmed' : 'suspected'}">
+  if ($('feedbackDetailSummary')) $('feedbackDetailSummary').textContent = `查看所选日期重复/关联反馈（确认 ${confirmed} · 疑似 ${suspected}）`;
+  if ($('feedbackRecords')) $('feedbackRecords').innerHTML = records.length ? records.map(row => `<article class="feedback-record ${row.confidence === '规则确认' ? 'confirmed' : 'suspected'}">
     <div class="feedback-record-head"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.source)} ${escapeHtml(row.record_id)}</a><span>店铺 ${escapeHtml(row.shop_id || '—')} · ${escapeHtml(row.brand)}</span></div><b>${escapeHtml(row.confidence)}</b></div>
     <p>${escapeHtml(row.description)}</p>
     <div class="feedback-record-meta"><span>${escapeHtml(row.created_at)}</span><span>${escapeHtml(row.reason)}</span><span>${(row.related || []).map(item => `${escapeHtml(item.source)} ${escapeHtml(item.record_id)}`).join('、')}</span></div>
