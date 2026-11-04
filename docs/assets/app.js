@@ -231,8 +231,12 @@ function renderFeedbackAnalysis(data) {
     const appHeight = totalCount ? merchantApp / totalCount * height : 0;
     return `<div class="feedback-hour" title="${escapeHtml(item.period)}：${totalCount} 单（天润 ${tianrun}、APP ${merchantApp}）"><span>${totalCount}</span><div class="feedback-hour-stack" style="height:${height}px"><i class="feedback-hour-tianrun"></i><i class="feedback-hour-app" style="height:${appHeight}px"></i></div><small>${escapeHtml(item.period.slice(0,5))}</small></div>`;
   }).join('');
-  $('feedbackPeakDefinition').textContent = `${selected.peak_period || '暂无高峰'} · 天润与APP合并，条纹为APP`;
+  const rangePeak = data.range_peak || {};
+  $('feedbackPeakDefinition').textContent = `${selected.peak_period || '暂无高峰'} · 天润与APP合并，条纹为APP；趋势窗口峰值 ${rangePeak.period || '—'}（${Number(rangePeak.total || 0)} 单）`;
 
+  const sourceRows = data.source_breakdown || [];
+  const sourceMax = Math.max(1, ...sourceRows.map(item => Number(item.count || 0)));
+  $('feedbackSourceList').innerHTML = sourceRows.length ? `<div class="feedback-source-title">来源分布</div>${sourceRows.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.source)}</span><i><b style="width:${Number(item.count || 0) / sourceMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('')}` : '';
   const reasons = data.reason_breakdown || [];
   const reasonMax = Math.max(1, ...reasons.map(item => Number(item.count || 0)));
   $('feedbackReasonList').innerHTML = reasons.length ? reasons.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.reason)}</span><i><b style="width:${Number(item.count || 0) / reasonMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('') : '<p class="empty">当前趋势窗口内没有规则确认的再次反馈。</p>';
