@@ -66,6 +66,7 @@ function render(data, sync, realtime) {
   const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
   $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
   renderTrend(data.daily_trend);
+  renderFeedbackAnalysis(data.feedback_analysis);
   renderShoppingBagUnderpayment(data.shopping_bag_underpayment);
   completionRecordsCache = null;
   completionPage = 1;
@@ -205,6 +206,44 @@ function renderShoppingBagUnderpayment(data) {
     <p>${escapeHtml(row.description)}</p>
     <small>${escapeHtml(row.created_at)} · ${escapeHtml(row.category)}${row.is_ka ? ' · KA' : ''}</small>
   </article>`).join('') : '<p class="empty">所选日期没有描述中包含“购物袋”的工单。</p>';
+}
+
+function renderFeedbackAnalysis(data) {
+  data = data || {};
+  const selected = data.selected || {};
+  const confirmed = Number(selected.confirmed_repeat_count || 0);
+  const suspected = Number(selected.suspected_repeat_count || 0);
+  const total = Number(selected.total || 0);
+  const peakCount = Number(selected.peak_count || 0);
+  $('feedbackSummary').innerHTML = `<div class="feedback-summary-main"><span>规则确认再次反馈</span><strong>${confirmed.toLocaleString()}</strong><small>涉及原事项 ${Number(selected.linked_issue_count || 0).toLocaleString()} 个</small></div>
+    <div><span>重复反馈率</span><strong>${Number(selected.repeat_rate || 0).toFixed(1)}%</strong><small>${confirmed} / ${total}，原始新增不扣减</small></div>
+    <div><span>跨渠道再次反馈</span><strong>${Number(selected.cross_channel_count || 0).toLocaleString()}</strong><small>APP与天润之间的明确关联</small></div>
+    <div><span>疑似重复待复核</span><strong>${suspected.toLocaleString()}</strong><small>不纳入正式重复率</small></div>
+    <div><span>反馈高峰</span><strong class="feedback-period">${escapeHtml(selected.peak_period || '—')}</strong><small>${peakCount} 单，占当日 ${total ? (peakCount * 100 / total).toFixed(1) : '0.0'}%</small></div>`;
+
+  const hours = data.two_hour || [];
+  const max = Math.max(1, ...hours.map(item => Number(item.total || 0)));
+  $('feedbackPeakChart').innerHTML = hours.map(item => {
+    const tianrun = Number(item.tianrun || 0);
+    const merchantApp = Number(item.merchant_app || 0);
+    const totalCount = Number(item.total || 0);
+    const height = totalCount ? Math.max(5, totalCount / max * 140) : 2;
+    const appHeight = totalCount ? merchantApp / totalCount * height : 0;
+    return `<div class="feedback-hour" title="${escapeHtml(item.period)}：${totalCount} 单（天润 ${tianrun}、APP ${merchantApp}）"><span>${totalCount}</span><div class="feedback-hour-stack" style="height:${height}px"><i class="feedback-hour-tianrun"></i><i class="feedback-hour-app" style="height:${appHeight}px"></i></div><small>${escapeHtml(item.period.slice(0,5))}</small></div>`;
+  }).join('');
+  $('feedbackPeakDefinition').textContent = `${selected.peak_period || '暂无高峰'} · 天润与APP合并，条纹为APP`;
+
+  const reasons = data.reason_breakdown || [];
+  const reasonMax = Math.max(1, ...reasons.map(item => Number(item.count || 0)));
+  $('feedbackReasonList').innerHTML = reasons.length ? reasons.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.reason)}</span><i><b style="width:${Number(item.count || 0) / reasonMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('') : '<p class="empty">当前趋势窗口内没有规则确认的再次反馈。</p>';
+  $('feedbackDefinition').textContent = data.definition || '';
+  const records = data.records || [];
+  $('feedbackDetailSummary').textContent = `查看所选日期重复/关联反馈（确认 ${confirmed} · 疑似 ${suspected}）`;
+  $('feedbackRecords').innerHTML = records.length ? records.map(row => `<article class="feedback-record ${row.confidence === '规则确认' ? 'confirmed' : 'suspected'}">
+    <div class="feedback-record-head"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.source)} ${escapeHtml(row.record_id)}</a><span>店铺 ${escapeHtml(row.shop_id || '—')} · ${escapeHtml(row.brand)}</span></div><b>${escapeHtml(row.confidence)}</b></div>
+    <p>${escapeHtml(row.description)}</p>
+    <div class="feedback-record-meta"><span>${escapeHtml(row.created_at)}</span><span>${escapeHtml(row.reason)}</span><span>${(row.related || []).map(item => `${escapeHtml(item.source)} ${escapeHtml(item.record_id)}`).join('、')}</span></div>
+  </article>`).join('') : '<p class="empty">所选日期没有规则确认或疑似重复记录。</p>';
 }
 
 function renderMerchantApp(app) {
