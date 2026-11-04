@@ -236,6 +236,10 @@ function renderFeedbackAnalysis(data) {
     $('datePicker').value = button.dataset.date;
     loadDashboard();
   }));
+  requestAnimationFrame(() => {
+    const chart = $('feedbackDailyChart');
+    chart.parentElement.scrollLeft = chart.scrollWidth;
+  });
   $('feedbackTrendScope').textContent = `${data.start_date || '—'} 至 ${data.end_date || '—'}；历史日按全天，所选日${data.cutoff_time ? `截至 ${data.cutoff_time}` : '按全天'}。疑似不计入重复率。`;
   const selectedWeek = data.selected_week || {};
   $('feedbackWeekSummary').innerHTML = selectedWeek.week_start ? `<span>所选日期所在周 · ${escapeHtml(selectedWeek.start_date)} 至 ${escapeHtml(selectedWeek.end_date)}</span><strong>确认 ${Number(selectedWeek.confirmed_repeat_count || 0)} 次 <small>疑似 ${Number(selectedWeek.suspected_repeat_count || 0)} 次</small></strong><span>重复率 ${Number(selectedWeek.repeat_rate || 0).toFixed(1)}% · ${selectedWeek.full_week ? '整周' : `截至所选日${selectedWeek.cutoff_time ? ` ${escapeHtml(selectedWeek.cutoff_time)}` : ''}`}</span>` : '';
