@@ -264,14 +264,18 @@ function renderFeedbackAnalysis(data) {
   $('feedbackSourceList').innerHTML = sourceRows.length ? `<div class="feedback-source-title">来源分布</div>${sourceRows.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.source || item.source_label || '未分类')}</span><i><b style="width:${Number(item.count || 0) / sourceMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('')}` : '';
   const reasons = Array.isArray(selected.reason_breakdown) ? selected.reason_breakdown : (data.reason_breakdown || []);
   const reasonMax = Math.max(1, ...reasons.map(item => Number(item.count || 0)));
-  $('feedbackReasonList').innerHTML = reasons.length ? reasons.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.reason)}</span><i><b style="width:${Number(item.count || 0) / reasonMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('') : '<p class="empty">所选日期没有规则确认的再次反馈。</p>';
+  const rules = Array.isArray(selected.rule_breakdown) ? selected.rule_breakdown : (data.rule_breakdown || []);
+  const ruleMax = Math.max(1, ...rules.map(item => Number(item.count || 0)));
+  const ruleHtml = rules.length ? `<div class="feedback-source-title">命中规则</div>${rules.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.rule)}</span><i><b style="width:${Number(item.count || 0) / ruleMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('')}` : '';
+  const reasonHtml = reasons.length ? `<div class="feedback-source-title">原因归类</div>${reasons.map(item => `<div class="feedback-reason"><span>${escapeHtml(item.reason)}</span><i><b style="width:${Number(item.count || 0) / reasonMax * 100}%"></b></i><strong>${Number(item.count || 0)}</strong></div>`).join('')}` : '';
+  $('feedbackReasonList').innerHTML = ruleHtml || reasonHtml ? `${ruleHtml}${reasonHtml}` : '<p class="empty">所选日期没有规则确认的再次反馈。</p>';
   $('feedbackDefinition').textContent = data.definition || '';
   const records = data.records || [];
   if ($('feedbackDetailSummary')) $('feedbackDetailSummary').textContent = `查看所选日期重复/关联反馈（确认 ${confirmed} · 疑似 ${suspected}）`;
   if ($('feedbackRecords')) $('feedbackRecords').innerHTML = records.length ? records.map(row => `<article class="feedback-record ${row.confidence === '规则确认' ? 'confirmed' : 'suspected'}">
     <div class="feedback-record-head"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.source)} ${escapeHtml(row.record_id)}</a><span>店铺 ${escapeHtml(row.shop_id || '—')} · ${escapeHtml(row.brand)}</span></div><b>${escapeHtml(row.confidence)}</b></div>
     <p>${escapeHtml(row.description)}</p>
-    <div class="feedback-record-meta"><span>${escapeHtml(row.created_at)}</span><span>${escapeHtml(row.reason)}</span><span>${(row.related || []).map(item => `${escapeHtml(item.source)} ${escapeHtml(item.record_id)}`).join('、')}</span></div>
+    <div class="feedback-record-meta"><span>${escapeHtml(row.created_at)}</span><span>命中：${escapeHtml(row.match_rule || row.reason)}</span><span>原因：${escapeHtml(row.reason)}</span><span>关联：${(row.related || []).map(item => `${escapeHtml(item.source)} ${escapeHtml(item.record_id)}（${escapeHtml(item.created_at || '—')}）`).join('、')}</span>${['R1','R2','S1'].includes(row.rule_id) ? `<span>文本匹配度 ${Math.round(Number(row.match_score || 0) * 100)}%</span>` : ''}</div>
   </article>`).join('') : '<p class="empty">所选日期没有规则确认或疑似重复记录。</p>';
 }
 
