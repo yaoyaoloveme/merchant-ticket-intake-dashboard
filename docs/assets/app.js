@@ -83,7 +83,7 @@ function loadDashboard(options = {}) {
 function renderDashboardStatus(data, sync, realtime, analysis) {
   if (!analysis?.stale) lastAutoSyncFinishedAt = realtime?.last_finished_at || lastAutoSyncFinishedAt;
   const syncText = data.last_sync ? `本地数据更新：${data.last_sync.finished_at.replace('T',' ')} · ${data.last_sync.message}` : '尚未同步数据';
-  const cutoffText = data.cutoff_time ? ` · 新增量对比统一截至 ${data.cutoff_time}（重复反馈历史日按全天）` : '';
+  const cutoffText = data.cutoff_time ? ` · 新增量对比统一截至 ${data.cutoff_time}` : '';
   const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
   const analysisText = analysis?.stale
     ? (analysis.refreshing ? '已显示最近结果，后台更新中' : '已显示最近结果，后台更新失败，稍后自动重试')
@@ -109,7 +109,6 @@ function render(data, sync, realtime, analysis) {
   $('kaCompare').textContent = `${data.ka.count} 单，较前一日 ${signed(data.ka.ratio_delta)} 个百分点`;
   renderDashboardStatus(data, sync, realtime, analysis);
   renderTrend(data.daily_trend);
-  renderFeedbackAnalysis(data.feedback_analysis);
   renderShoppingBagUnderpayment(data.shopping_bag_underpayment);
   completionRecordsCache = null;
   completionPage = 1;
