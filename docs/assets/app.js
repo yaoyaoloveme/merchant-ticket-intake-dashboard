@@ -337,7 +337,7 @@ function renderMerchantApp(app) {
   $('merchantOverdueCount').textContent = app.open_synced_at && !queueStale ? `${overdue.length} 单` : '待确认';
   $('merchantOverdueList').innerHTML = overdue.length ? overdue.map(row => `<article class="merchant-overdue-ticket">
     <div class="merchant-overdue-ticket-head"><div><a href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">稽查单 ${escapeHtml(row.inspection_id)}</a><span>事件 ${escapeHtml(row.event_id)} · 店铺 ${escapeHtml(row.shop_id)}</span></div><strong>${escapeHtml(row.age_hours ?? '—')} 小时</strong></div>
-    <p>${escapeHtml(row.description)}</p><div class="merchant-ticket-meta"><span>${escapeHtml(row.brand)}</span><span>${escapeHtml(row.inspect_status)}</span><span>创建 ${escapeHtml(row.created_at)}</span>${row.risk_hits?.map(hit => `<b class="risk-tag">${escapeHtml(hit.label)}</b>`).join('') || ''}</div>
+    <p>${escapeHtml(row.description)}</p><div class="merchant-ticket-meta"><span>${escapeHtml(row.brand)}</span><span>${escapeHtml(row.inspect_status)}</span><span>创建 ${escapeHtml(row.created_at)}</span></div>
   </article>`).join('') : app.open_synced_at && !queueStale
     ? '<div class="merchant-overdue-empty"><strong>0 单</strong><span>本次已同步的当前未完成队列中，没有创建满24小时且仍未完成稽查的商家APP稽查单。</span></div>'
     : '<div class="merchant-overdue-empty uncertain"><strong>暂不能确认</strong><span>当前未完成队列同步缺失或已超过15分钟，不能据此判断超24小时工单为0。</span></div>';
@@ -349,7 +349,7 @@ function renderMerchantApp(app) {
   $('merchantRecordTable').innerHTML = records.length ? records.map(row => `<tr>
     <td><a class="merchant-id" href="${escapeHtml(row.source_url)}" target="_blank" rel="noopener">${escapeHtml(row.inspection_id)}</a><small>事件 ${escapeHtml(row.event_id)}<br>店铺 ${escapeHtml(row.shop_id)}</small></td>
     <td>${escapeHtml(row.brand)}${row.is_ka ? '<small class="ka-mark">KA</small>' : ''}</td>
-    <td class="merchant-description">${escapeHtml(row.description)}${row.risk_hits?.length ? `<div class="merchant-risk-tags">${row.risk_hits.map(hit => `<b>${escapeHtml(hit.label)}</b>`).join('')}</div>` : ''}</td>
+    <td class="merchant-description">${escapeHtml(row.description)}</td>
     <td><span class="merchant-state ${row.is_open ? 'pending' : ''}">${escapeHtml(row.inspect_status)}</span></td>
     <td>${escapeHtml(row.abnormal_state)}<small>${escapeHtml(row.abnormal_type)}</small></td>
     <td>${escapeHtml(row.created_at)}<small>${row.completed_at ? `完成 ${escapeHtml(row.completed_at)}` : '尚未完成'}</small></td>
