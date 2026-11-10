@@ -6,7 +6,6 @@ const colors = {
 };
 let dashboardData = null;
 let selectedCategoryIndex = 0;
-let selectedKaCategory = '全部';
 let completionRecordsCache = null;
 let completionDayRequest = 0;
 let completionDateChanged = false;
@@ -14,8 +13,14 @@ let completionPage = 1;
 let completionPages = 1;
 let lastAutoSyncFinishedAt = null;
 let followsLatestDate = true;
+let dashboardRequest = 0;
+let dashboardPendingRequest = null;
+let dashboardRefreshTimer = null;
+let dashboardRenderedKey = null;
+let dashboardRenderedVersion = null;
 const $ = (id) => document.getElementById(id);
 const isPublicDashboard = window.TICKET_PUBLIC === true;
+const isReadOnlyDashboard = window.TICKET_READONLY === true;
 let publicManifest = null;
 let publicSnapshot = null;
 let publicLoadedRevision = null;
@@ -27,25 +32,68 @@ const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const signClass = (n) => n > 0 ? 'positive' : n < 0 ? 'negative' : '';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
-async function loadDashboard() {
+function loadDashboard(options = {}) {
   if (isPublicDashboard) return loadPublicDashboard();
   const date = $('datePicker').value;
   const windowSize = $('windowPicker').value;
-  $('statusLine').className = 'status-line';
-  $('statusLine').textContent = '正在计算趋势、异常和问题主题…';
-  try {
-    const response = await fetch(`/api/dashboard?date=${encodeURIComponent(date)}&window=${windowSize}`);
-    const result = await response.json();
-    if (!result.ok) throw new Error(result.error || '读取失败');
-    dashboardData = result.data;
-    render(result.data, result.sync, result.realtime);
-  } catch (error) {
-    $('statusLine').className = 'status-line error';
-    $('statusLine').textContent = error.message;
+  const key = `${date}|${windowSize}`;
+  const refresh = options.refresh === true;
+  if (dashboardPendingRequest?.key === key) {
+    if (refresh) dashboardPendingRequest.refreshAfter = true;
+    return dashboardPendingRequest.promise;
   }
+  window.clearTimeout(dashboardRefreshTimer);
+  dashboardPendingRequest?.controller.abort();
+  const requestId = ++dashboardRequest;
+  const pending = {key, controller: new AbortController(), refreshAfter: false};
+  dashboardPendingRequest = pending;
+  $('statusLine').className = 'status-line';
+  $('statusLine').textContent = dashboardData
+    ? (dashboardRenderedKey === key ? '正在更新，保留当前分析结果…' : `正在读取 ${date} 的分析结果，当前仍显示 ${dashboardData.selected_date}…`)
+    : '正在读取分析结果…';
+  pending.promise = (async () => {
+    try {
+      const response = await fetch(`/api/dashboard?date=${encodeURIComponent(date)}&window=${windowSize}${refresh ? '&refresh=1' : ''}`, {signal: pending.controller.signal, cache: 'no-store'});
+      const result = await response.json();
+      if (requestId !== dashboardRequest) return;
+      if (!response.ok || !result.ok) throw new Error(result.error || '读取失败');
+      const sameResult = dashboardRenderedKey === key && result.analysis?.version && dashboardRenderedVersion === result.analysis.version;
+      dashboardData = result.data;
+      dashboardRenderedKey = key;
+      dashboardRenderedVersion = result.analysis?.version;
+      if (sameResult) renderDashboardStatus(result.data, result.sync, result.realtime, result.analysis);
+      else render(result.data, result.sync, result.realtime, result.analysis);
+      // Poll the replacement while stale, and periodically revalidate fresh results.
+      const delay = Math.max(2, Math.min(60, Number(result.analysis?.retry_after_seconds) || 60));
+      dashboardRefreshTimer = window.setTimeout(() => loadDashboard(), delay * 1000);
+    } catch (error) {
+      if (requestId !== dashboardRequest || error.name === 'AbortError') return;
+      $('statusLine').className = 'status-line error';
+      $('statusLine').textContent = `${error.message}${dashboardData ? '；保留上次成功读取的结果，将自动重试' : '，稍后自动重试'}`;
+      dashboardRefreshTimer = window.setTimeout(() => loadDashboard(), 10000);
+    } finally {
+      if (dashboardPendingRequest === pending) {
+        dashboardPendingRequest = null;
+        if (pending.refreshAfter) loadDashboard({refresh: true});
+      }
+    }
+  })();
+  return pending.promise;
 }
 
-function render(data, sync, realtime) {
+function renderDashboardStatus(data, sync, realtime, analysis) {
+  if (!analysis?.stale) lastAutoSyncFinishedAt = realtime?.last_finished_at || lastAutoSyncFinishedAt;
+  const syncText = data.last_sync ? `本地数据更新：${data.last_sync.finished_at.replace('T',' ')} · ${data.last_sync.message}` : '尚未同步数据';
+  const cutoffText = data.cutoff_time ? ` · 新增量对比统一截至 ${data.cutoff_time}（重复反馈历史日按全天）` : '';
+  const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
+  const analysisText = analysis?.stale
+    ? (analysis.refreshing ? '已显示最近结果，后台更新中' : '已显示最近结果，后台更新失败，稍后自动重试')
+    : '分析完成';
+  $('statusLine').className = analysis?.stale && !analysis.refreshing ? 'status-line error' : 'status-line';
+  $('statusLine').textContent = `${data.selected_date} ${analysisText}${cutoffText} · ${syncText}${refreshText}${sync?.running ? ` · ${sync.message}` : ''}`;
+}
+
+function render(data, sync, realtime, analysis) {
   const s = data.summary;
   $('sourceBreakdown').innerHTML = `<span>天润工单：<b>${Number(s.tianrun_count || 0).toLocaleString()}</b></span><span>商家APP发起：<b>${Number(s.merchant_app_count || 0).toLocaleString()}</b></span>`;
   $('totalMetric').textContent = s.total.toLocaleString();
@@ -60,11 +108,7 @@ function render(data, sync, realtime) {
   $('kaMetric').textContent = `${data.ka.ratio}%`;
   $('kaCompare').className = signClass(data.ka.ratio_delta);
   $('kaCompare').textContent = `${data.ka.count} 单，较前一日 ${signed(data.ka.ratio_delta)} 个百分点`;
-  lastAutoSyncFinishedAt = realtime?.last_finished_at || lastAutoSyncFinishedAt;
-  const syncText = data.last_sync ? `本地数据更新：${data.last_sync.finished_at.replace('T',' ')} · ${data.last_sync.message}` : '尚未同步数据';
-  const cutoffText = data.cutoff_time ? ` · 新增量对比统一截至 ${data.cutoff_time}（重复反馈历史日按全天）` : '';
-  const refreshText = realtime?.next_run_at ? ` · 自动同步：每5分钟，下一次 ${realtime.next_run_at.slice(11,16)}` : ' · 自动同步：每5分钟';
-  $('statusLine').textContent = sync?.running ? sync.message : `${data.selected_date} 分析完成${cutoffText} · ${syncText}${refreshText}`;
+  renderDashboardStatus(data, sync, realtime, analysis);
   renderTrend(data.daily_trend);
   renderFeedbackAnalysis(data.feedback_analysis);
   renderShoppingBagUnderpayment(data.shopping_bag_underpayment);
@@ -74,10 +118,8 @@ function render(data, sync, realtime) {
   loadCompletionDay();
   renderMerchantApp(data.merchant_app);
   renderCategoryInsights(data.category_insights);
-  renderAlerts(data.growth_anomalies, data.risk_summary, data.risk_records, data.operational_anomaly_summary, data.merchant_app?.risk_records || []);
-  renderTopics(data.topics);
+  renderAlerts(data.risk_summary, data.risk_records, data.merchant_app?.risk_records || []);
   renderKA(data.ka);
-  renderAnomalyTable(data.anomaly_records);
 }
 
 function renderCompletionRate(rate) {
@@ -91,6 +133,56 @@ function renderCompletionRate(rate) {
   $('completionCategories').innerHTML = (rate.categories || []).map(item => { const itemRate = item.completed ? `${item.rate_24h}%` : '暂无样本'; return `<article class="completion-category"><div class="completion-category-head"><strong>${escapeHtml(item.category)}</strong><span>${itemRate}</span></div><div class="completion-category-grid"><span>完成 / 分母 <b>${item.within_24h} / ${item.completed}</b></span><span>未完成 <b>${item.not_completed_count}</b>（超24h ${item.overdue_not_completed_count}）</span><span>待核验 <b>${item.pending_verification}</b></span></div></article>`; }).join('');
   const excluded = rate.excluded_breakdown || [];
   $('completionQuality').innerHTML = `<span>${escapeHtml(rate.source_definition || '')}</span>${excluded.length ? `<span class="completion-excluded">待核验：${excluded.map(item => `${escapeHtml(item.reason)} ${item.count} 单`).join(' · ')}</span>` : '<span>当日没有待核验工单</span>'}`;
+}
+
+function renderForgeReminders(payload) {
+  const panel = $('forgeReminderPanel');
+  panel.hidden = false;
+  const data = payload.data || {};
+  const items = data.items || [];
+  const total = Number(data.total || 0);
+  const stale = payload.stale === true;
+  panel.classList.toggle('has-items', total > 0);
+  panel.classList.toggle('is-stale', stale);
+  $('forgeReminderStatus').innerHTML = total
+    ? `<strong>${total} 单待填写</strong><span>稽查已经完成，请相关员工尽快补充 Forge${stale ? ' · 当前为最近一次成功结果' : ''}</span>`
+    : stale
+      ? `<strong>暂不能确认</strong><span>${escapeHtml(payload.error || 'Forge数据源暂不可用')}</span>`
+      : '<strong>0 单</strong><span>当前没有发现稽查完成后漏填 Forge 的工单</span>';
+  $('forgeReminderOwners').innerHTML = (data.by_handler || []).map(item =>
+    `<button type="button" data-forge-handler="${escapeHtml(item.handler)}"><span>${escapeHtml(item.handler)}</span><strong>${Number(item.count || 0)}</strong></button>`
+  ).join('');
+  $('forgeReminderSummary').textContent = total ? `查看 ${total} 单待填写明细` : '查看核对结果';
+  $('forgeReminderDetails').open = total > 0;
+  $('forgeReminderList').innerHTML = items.length ? items.map(item => `<article class="forge-reminder-item" data-forge-owner="${escapeHtml(item.handler)}">
+    <header><a href="${escapeHtml(item.source_url || '#')}" target="_blank" rel="noopener">工单 ${escapeHtml(item.ticket_id)}</a><strong>${escapeHtml(item.handler)}</strong></header>
+    <div><span>${escapeHtml(item.category)}</span><span>店铺 ${escapeHtml(item.shop_id || '—')}</span><span>${escapeHtml(item.created_at || '创建时间待补充')}</span></div>
+    <p>${escapeHtml(item.problem || '无问题描述')}</p>
+    <small>稽查：${escapeHtml(item.inspection_status)}${item.inspection_completed_at ? ` · ${escapeHtml(item.inspection_completed_at)}` : ''}　Forge：${escapeHtml(item.forge_status)}</small>
+  </article>`).join('') : '<div class="forge-reminder-clear">当前没有待填写 Forge 的工单。</div>';
+  $('forgeReminderOwners').querySelectorAll('[data-forge-handler]').forEach(button => button.addEventListener('click', () => {
+    const handler = button.dataset.forgeHandler;
+    $('forgeReminderDetails').open = true;
+    $('forgeReminderList').querySelectorAll('[data-forge-owner]').forEach(row => { row.hidden = row.dataset.forgeOwner !== handler; });
+    $('forgeReminderSummary').textContent = `${handler} · ${(data.by_handler || []).find(item => item.handler === handler)?.count || 0} 单待填写`;
+  }));
+}
+
+async function loadForgeReminders() {
+  if (isPublicDashboard) return;
+  try {
+    const response = await fetch('/api/forge-reminders', {cache: 'no-store'});
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || `读取失败（${response.status}）`);
+    renderForgeReminders(payload);
+  } catch (error) {
+    const panel = $('forgeReminderPanel');
+    panel.hidden = false;
+    panel.classList.add('is-stale');
+    $('forgeReminderStatus').innerHTML = `<strong>暂不能核对</strong><span>${escapeHtml(error.message)}</span>`;
+    $('forgeReminderOwners').innerHTML = '';
+    $('forgeReminderList').innerHTML = '<div class="forge-reminder-clear">数据源恢复后会自动重新核对。</div>';
+  }
 }
 
 function weekStartForIso(dayString) {
@@ -348,11 +440,10 @@ function renderCategoryDetail(row) {
   </article>`).join('') : '<div class="empty">该类别暂无敏感风险或处理异常工单</div>';
 }
 
-function renderAlerts(growth, riskSummary, riskRecords, operationalSummary, appRiskRecords = []) {
+function renderAlerts(riskSummary, riskRecords, appRiskRecords = []) {
   const combinedRiskRecords = [...riskRecords, ...appRiskRecords.map(row => ({
     ...row, ticket_id: row.inspection_id, status: row.inspect_status, handler: '商家APP', source_label: '商家APP'
   }))].sort((a, b) => ({'紧急': 0, '高': 1, '关注': 2}[a.risk_level] ?? 3) - ({'紧急': 0, '高': 1, '关注': 2}[b.risk_level] ?? 3));
-  $('growthAlerts').innerHTML = growth.length ? growth.map(a => `<div class="alert"><strong>${escapeHtml(a.category)}：${a.current} 单</strong><small>近7日均值 ${a.avg7}，高出 ${a.delta_vs_avg} 单</small></div>`).join('') : '<div class="empty">当日各类型均未明显偏离近7日常态</div>';
   const appRiskSummary = appRiskRecords.length ? `<span>商家APP风险工单 <b>${appRiskRecords.length}</b></span>` : '';
   $('riskCount').textContent = `${combinedRiskRecords.length} 单`;
   $('riskSummary').innerHTML = `${riskSummary.length ? riskSummary.map(a => `<span>${escapeHtml(a.risk)} <b>${a.count}</b></span>`).join('') : appRiskRecords.length ? '<span>风险线索来自商家APP</span>' : '<span class="muted">暂无敏感风险词命中</span>'}${appRiskSummary}`;
@@ -361,7 +452,6 @@ function renderAlerts(growth, riskSummary, riskRecords, operationalSummary, appR
     <div class="risk-hit-list">${r.risk_hits.map(hit => `<span><b>${escapeHtml(hit.label)}</b> · 命中“${escapeHtml(hit.matched_text)}” · ${escapeHtml(hit.source)}</span>`).join('')}</div>
     <p>${escapeHtml(r.description)}</p><small>${escapeHtml((r.created_at || '').slice(11,16))} · ${escapeHtml(r.status)} · ${escapeHtml(r.handler)}</small>
   </article>`).join('') : '<div class="empty risk-empty">当日未识别到明确的暴力、舆情、未成年人、公共卫生或人身安全风险工单</div>';
-  $('anomalySummary').innerHTML = operationalSummary.length ? operationalSummary.slice(0,8).map(a => `<div class="anomaly-chip"><span>${escapeHtml(a.reason)}</span><b>${a.count}</b></div>`).join('') : '<div class="empty">暂无处理或数据质量异常</div>';
 }
 
 async function pollRealtimeStatus() {
@@ -397,78 +487,24 @@ async function pollRealtimeStatus() {
     }
     const finishedAt = status.realtime?.last_finished_at;
     if (finishedAt && finishedAt !== lastAutoSyncFinishedAt) {
-      lastAutoSyncFinishedAt = finishedAt;
       if (followsLatestDate && status.realtime.latest_date) $('datePicker').value = status.realtime.latest_date;
-      loadDashboard();
+      loadDashboard({refresh: true});
     }
   } catch (_) {
     // A temporary status polling failure must not interrupt the current dashboard view.
   }
 }
 
-function renderTopics(topics) {
-  const max = Math.max(1, ...topics.map(t => t.count));
-  $('topicsList').innerHTML = topics.map((t,i) => `<div class="topic-row ${i===0?'active':''}" data-topic="${i}"><strong>${escapeHtml(t.topic)}</strong><div class="topic-track"><div class="topic-fill" style="width:${t.count/max*100}%"></div></div><div class="topic-value">${t.count} <small>${t.ratio}%</small></div></div>`).join('');
-  $('topicsList').querySelectorAll('.topic-row').forEach(row => row.addEventListener('click', () => {
-    $('topicsList').querySelectorAll('.topic-row').forEach(x => x.classList.remove('active'));
-    row.classList.add('active');
-    showTopicSamples(topics[Number(row.dataset.topic)]);
-  }));
-  if (topics[0]) showTopicSamples(topics[0]);
-}
-
-function showTopicSamples(topic) {
-  $('topicSamples').innerHTML = `<h3>${escapeHtml(topic.topic)} · 描述样例</h3><ul>${topic.samples.map(s => `<li><b>${escapeHtml(s.ticket_id)}</b> · ${escapeHtml(s.brand)}：${escapeHtml(s.description)}</li>`).join('')}</ul>`;
-}
-
 function renderKA(ka) {
-  $('kaDefinition').textContent = ka.definition;
   const totalDelta = ka.count - ka.previous_count;
   $('kaSummary').innerHTML = `<div><span>KA 工单</span><strong>${ka.count}</strong><small class="${signClass(totalDelta)}">较前日 ${signed(totalDelta)} 单</small></div>
     <div><span>KA 占全部新增</span><strong>${ka.ratio}%</strong><small class="${signClass(ka.ratio_delta)}">较前日 ${signed(ka.ratio_delta)} 个百分点</small></div>
-    <div><span>涉及 KA 商家</span><strong>${ka.brand_details.length}</strong><small>前日 ${ka.previous_count} 单 KA 工单</small></div>`;
-
-  const categories = [{category: '全部', current: ka.count, previous: ka.previous_count, delta: totalDelta}, ...ka.category_breakdown];
-  if (!categories.some(item => item.category === selectedKaCategory)) selectedKaCategory = '全部';
-  $('kaCategoryFilters').innerHTML = categories.map(item => `<button type="button" class="ka-category-filter ${item.category === selectedKaCategory ? 'active' : ''}" data-ka-category="${escapeHtml(item.category)}" role="tab" aria-selected="${item.category === selectedKaCategory}">
-    <span>${escapeHtml(item.category)}</span><strong>${item.current} 单</strong><small class="${signClass(item.delta)}">较前日 ${signed(item.delta)}</small>
-  </button>`).join('');
-  $('kaCategoryFilters').querySelectorAll('[data-ka-category]').forEach(button => button.addEventListener('click', () => {
-    selectedKaCategory = button.dataset.kaCategory;
-    renderKA(ka);
-  }));
-
-  const filteredBrands = ka.brand_details.map(brand => ({
-    ...brand,
-    visibleTickets: selectedKaCategory === '全部' ? brand.tickets : brand.tickets.filter(ticket => ticket.category === selectedKaCategory)
-  })).filter(brand => brand.visibleTickets.length);
-  $('kaDetailHint').textContent = selectedKaCategory === '全部' ? `共 ${ka.count} 张 KA 工单，按商家展开` : `${selectedKaCategory}：${categories.find(item => item.category === selectedKaCategory)?.current || 0} 张工单，按商家展开`;
-  $('kaBrandDetails').innerHTML = filteredBrands.length ? filteredBrands.map((brand, index) => {
-    const categoryTags = ka.category_breakdown.filter(item => brand.categories[item.category]).map(item => `<span>${escapeHtml(item.category)} ${brand.categories[item.category]}</span>`).join('');
-    const otherTag = brand.other_count ? `<span>其他 ${brand.other_count}</span>` : '';
-    return `<details class="ka-brand-group" ${index === 0 ? 'open' : ''}>
-      <summary><div><strong>${escapeHtml(brand.brand)}</strong><span>${brand.visibleTickets.length} 张${selectedKaCategory === '全部' ? ' KA 工单' : ` ${escapeHtml(selectedKaCategory)}`}</span></div><div class="ka-brand-tags">${categoryTags}${otherTag}</div></summary>
-      <div class="ka-ticket-list">${brand.visibleTickets.map(ticket => `<article class="ka-ticket">
-        <div class="ka-ticket-head"><a href="${escapeHtml(ticket.source_url)}" target="_blank" rel="noopener">工单 ${escapeHtml(ticket.ticket_id)}</a><span class="category-tag">${escapeHtml(ticket.category)}</span></div>
-        <p>${escapeHtml(ticket.description) || '未填写问题描述'}</p>
-        <small>店铺 ${escapeHtml(ticket.shop_id)} · ${escapeHtml(ticket.created_at.slice(11,16))} · ${escapeHtml(ticket.status)}${ticket.handler ? ` · ${escapeHtml(ticket.handler)}` : ''}</small>
-      </article>`).join('')}</div>
-    </details>`;
-  }).join('') : '<div class="empty">当前类别下没有 KA 工单</div>';
-}
-
-function renderAnomalyTable(rows) {
-  $('anomalyTable').innerHTML = rows.length ? rows.map(r => `<tr>
-    <td><span class="ticket-id">${escapeHtml(r.ticket_id)}</span><br><span class="muted">${escapeHtml(r.created_at.slice(11))}</span></td>
-    <td>${escapeHtml(r.shop_id)}<br><span class="muted">${escapeHtml(r.brand)}</span></td>
-    <td>${escapeHtml(r.category)}</td><td>${escapeHtml(r.description)}</td>
-    <td><div class="reason-list">${r.reasons.map(reason => `<span class="reason">${escapeHtml(reason)}</span>`).join('')}</div></td>
-    <td>${escapeHtml(r.status)}<br><span class="muted">${escapeHtml(r.handler)}</span></td>
-  </tr>`).join('') : '<tr><td colspan="6" class="empty">当日没有命中异常规则的工单</td></tr>';
+    <div><span>涉及 KA 商家</span><strong>${(ka.brand_details || []).length}</strong><small>前日 ${ka.previous_count} 单 KA 工单</small></div>`;
 }
 
 async function syncData() {
   if (isPublicDashboard) return loadPublicDashboard();
+  if (isReadOnlyDashboard) return;
   const button = $('syncBtn');
   button.disabled = true; button.textContent = '正在同步…';
   const days = Number($('windowPicker').value);
@@ -480,7 +516,7 @@ async function syncData() {
       const status = await (await fetch('/api/sync/status')).json();
       $('statusLine').textContent = status.sync.message;
       if (!status.sync.running) {
-        clearInterval(timer); button.disabled = false; button.textContent = '同步最新数据'; loadDashboard();
+        clearInterval(timer); button.disabled = false; button.textContent = '同步最新数据'; loadDashboard({refresh: true});
       }
     }, 1500);
   } catch (error) {
@@ -496,7 +532,7 @@ $('completionDatePicker').addEventListener('change', () => { completionDateChang
 $('completionPrev').addEventListener('click', () => { if (completionPage > 1) { completionPage--; renderCompletionRecords(); } });
 $('completionNext').addEventListener('click', () => { if (completionPage < completionPages) { completionPage++; renderCompletionRecords(); } });
 document.querySelector('.completion-details').addEventListener('toggle', event => { if (event.currentTarget.open) renderCompletionRecords(); });
-$('syncBtn').addEventListener('click', syncData);
+if ($('syncBtn')) $('syncBtn').addEventListener('click', syncData);
 async function fetchPublicJson(path) {
   const response = await fetch(`${path}?v=${Date.now()}`, {cache: 'no-store'});
   if (!response.ok) throw new Error(`数据读取失败（${response.status}）`);
@@ -546,10 +582,11 @@ async function loadPublicDashboard(manifest) {
   }
 }
 
-if (isPublicDashboard) {
+if (isPublicDashboard && $('syncBtn')) {
   $('syncBtn').textContent = '刷新公开数据';
 }
 loadDashboard();
+loadForgeReminders();
 if (isPublicDashboard) {
   const schedulePublicVersionCheck = () => {
     const elapsed = Date.now() - publicPageOpenedAt;
@@ -569,4 +606,5 @@ if (isPublicDashboard) {
   schedulePublicVersionCheck();
 } else {
   window.setInterval(pollRealtimeStatus, 30000);
+  window.setInterval(loadForgeReminders, 60000);
 }
