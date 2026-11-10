@@ -52,16 +52,6 @@
       <article class="metric ka"><span>KA 商家占比（天润）</span><strong id="kaMetric">—</strong><small id="kaCompare">—</small></article>
     </section>
 
-    <section id="forgeReminderPanel" class="panel forge-reminder-panel" hidden>
-      <div class="panel-head"><div><span class="index">提醒</span><h2>Forge 待填写</h2></div><p>只提醒稽查已完成、但 Forge 仍未填写的工单；不影响24小时完成率</p></div>
-      <div id="forgeReminderStatus" class="forge-reminder-status">正在核对 Forge 状态…</div>
-      <div id="forgeReminderOwners" class="forge-reminder-owners"></div>
-      <details id="forgeReminderDetails" class="forge-reminder-details">
-        <summary id="forgeReminderSummary">查看待填写工单</summary>
-        <div id="forgeReminderList" class="forge-reminder-list"></div>
-      </details>
-    </section>
-
     <section class="panel trend-panel">
       <div class="panel-head"><div><span class="index">01</span><h2>每日新增趋势</h2></div><p>新增合计 = 天润工单 + 商家APP；纯色为天润类型，条纹为APP</p></div>
       <div id="trendLegend" class="legend"></div>
@@ -132,29 +122,6 @@
       </div>
     </section>
 
-    <div class="analysis-sections">
-      <section class="panel category-analysis-panel">
-        <div class="panel-head"><div><span class="index">03</span><h2>四类工单业务分析</h2></div><p>点击类别查看今日数量、前日增减、商家主要诉求、共同点及具体风险工单</p></div>
-        <div id="categoryCards" class="category-cards"></div>
-        <div class="category-detail">
-          <div class="category-detail-head">
-            <div><span id="categoryName" class="category-name">—</span><h3 id="categoryConclusion">—</h3></div>
-            <div id="categoryMetrics" class="category-metrics"></div>
-          </div>
-          <div id="categoryCommon" class="category-common"></div>
-          <div class="category-drill-grid">
-            <section><div class="subsection-head"><h3>商家诉求分布</h3><p>每项均与前日同口径对比，可展开查看具体工单</p></div><div id="categoryDemands" class="demand-list"></div></section>
-            <section><div class="subsection-head"><h3>风险与处理卡点</h3><p>直接定位到需要优先处理的工单</p></div><div id="categoryAttention" class="category-attention"></div></section>
-          </div>
-        </div>
-      </section>
-      <section class="panel risk-radar-panel">
-        <div class="panel-head"><div><span class="index">04</span><h2>高风险雷达</h2></div><p>仅收录命中明确暴力、人身安全、舆情升级、监管举报、未成年人、食品安全、治安、现金或隐私风险的具体工单</p></div>
-        <div class="risk-radar-head"><div id="riskSummary" class="risk-summary"></div><strong id="riskCount">—</strong></div>
-        <div id="riskTicketList" class="risk-ticket-list"></div>
-      </section>
-    </div>
-
     <section class="panel ka-panel">
       <div class="panel-head"><div><span class="index">05</span><h2>KA 商家反馈统计</h2></div><p>仅统计KA工单量、占比和涉及商家数量</p></div>
       <div id="kaSummary" class="ka-summary"></div>
@@ -163,6 +130,6 @@
 
   <script>window.TICKET_READONLY = {{ 'true' if readonly else 'false' }};</script>
   <script>window.TICKET_PUBLIC = true;</script>
-  <script src="assets/app.js?v=9edfe158c7a1"></script>
+  <script src="assets/app.js?v=2f2af7a902bb"></script>
 </body>
 </html>
